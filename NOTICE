@@ -1,0 +1,9 @@
+wazn-experimental
+Copyright 2026 Djellal M' Aniss
+
+This product is licensed under the Apache License, Version 2.0.
+
+Wazn checkpoints run on top of a third-party backbone language model (for
+example Qwen/Qwen3.5-2B-Base), which is downloaded from the Hugging Face Hub
+at load time and is not distributed with this library. The backbone is
+subject to its own license; see its model card.

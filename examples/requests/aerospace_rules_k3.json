@@ -1,0 +1,18 @@
+{
+  "state": {
+    "rules": "- Rule 1 (Safe Mode Transition): Reaction Wheel Desaturation Failure or Unresolved Attitude Drift > 5.0 Degrees forces immediate Transition to Safe Mode (Code: SAFE_MODE_ACTIVE) to align solar arrays toward the Sun.\n- Rule 2 (Thruster Duty Cycle Throttle): Main Hydrazine Thruster Chamber Temperature exceeding 280°C forces automated 50% Throttle Reduction to protect engine nozzle geometry.\n- Rule 3 (High Gain Antenna Slewing): Loss of Ka-Band Signal Lock (> 12 dB drop) initiates Automated Antenna Slewing to re-acquire Earth Ground Station telemetry.\n- Rule 4 (Low Power Load Shedding): Battery Depth of Discharge (DoD) exceeding 65% forces Non-Essential Payload Shutdown, provided no higher-priority Safe Mode event is active.\n- Rule 5 (Nominal Orbit Operations): Science Data Acquisition and High-Rate Downlink proceed normally when all bus telemetry parameters remain within nominal envelopes.",
+    "context": "SATELLITE TELEMETRY FRAME #SAT-4019\n- Spacecraft ID: Deep-Space Surveyor 4\n- Attitude Tracking Deviation: 6.8 Degrees (Threshold Exceeded: > 5.0° Drift)\n- Main Thruster Temperature: 295.0°C (Critical Thermal Threshold Exceeded)\n- Ka-Band Signal Level: Nominal (-72 dBm, Lock Maintained)\n- Battery Depth of Discharge: 72.0% (Sub-Threshold Critical Load Shed Trigger)\n- Operating Mode: Science Mission Survey (Target: Asteroid 2024-X1)"
+  },
+  "questions": {
+    "v1_zero_shot_codes_k3": {
+      "type": "choice",
+      "instructions": "Which top-level flight software state transition is mandated by telemetry frame #SAT-4019?",
+      "criteria": {
+        "SAFE_MODE": "Transition spacecraft bus to Safe Mode orientation",
+        "THROTTLE": "Apply 50 percent thruster thermal throttling",
+        "NOMINAL": "Maintain standard science survey operations"
+      },
+      "true_label": "SAFE_MODE"
+    }
+  }
+}

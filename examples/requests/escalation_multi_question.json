@@ -1,0 +1,56 @@
+{
+  "state": {
+    "rules": "- Department Routing: If a ticket involves a chargeback/dispute threat, or has 3 or more unresolved contacts, assign to 'escalations'.\n- Primary Intent Hierarchy: If an unauthorized duplicate charge is reported alongside other requests, prioritize 'reverse_duplicate_charge' as the primary intent.\n- Escalation Triggers: If the customer mentions taking action with a card issuer, regulator, or legal entity, code escalation_needed as 'yes_legal_or_financial_risk'.\n- Compensation Conditions:\n  * none: Standard order issue resolved on first contact.\n  * apology_only: Single minor delay with no financial error.\n  * shipping_refund: Carrier delay where express shipping was paid.\n  * store_credit: Customer account age >= 5 years AND experienced both a warehouse mispick and an unhandled duplicate charge.\n  * expedited_replacement: Customer explicitly requests immediate replacement dispatch for an upcoming event.\n- Workflow Next Action: If a case meets the criteria for supervisor escalation, the required single next action is 'transfer_to_supervisor'.",
+    "context": "Subject: RE: RE: Order #88214 - still no resolution\n\nFrom: dana.whitfield@example.com\nAccount: Dana Whitfield, member since 2019, 34 prior orders, zero prior returns.\n\n--- Latest message, Thursday 14:52 ---\n\nThis is my third email about order #88214 and I still don't have an answer from anyone.\n\nTo recap, since nobody seems to read the thread: I ordered the trail runners in a size 10 on the 3rd. They arrived on the 9th in a size 8, in a box labelled size 10. I emailed the same day. On the 10th someone called Marcus told me a prepaid return label would arrive \"within 24 hours\". It never did. I emailed again on the 12th and got an automated reply telling me to check the help centre.\n\nMeanwhile my card was charged twice. Once for 129.00 on the 3rd, and again for 129.00 on the 11th, which nobody has explained to me. My bank says both charges are from you and both have settled. I have attached the statement.\n\nI am running a half marathon on the 29th and I bought these specifically to break them in. At this point I don't especially want a replacement, I want the second charge reversed and I want the shoes I actually paid for, or my money back entirely. If that isn't possible then I would like this escalated to somebody who can make a decision, because so far I have spoken to three people and none of them could.\n\nI have been a customer for six years and this is the first time I have had to chase anything this hard. I'd rather not take it to my card issuer as a dispute but I will if I have to by the end of the week.\n\nDana"
+  },
+  "questions": {
+    "primary_intent": {
+      "type": "choice",
+      "instructions": "What is the primary customer intent according to policy hierarchy?",
+      "criteria": {
+        "replacement": "Send the correct item",
+        "refund": "Return the money and end the transaction",
+        "reverse_duplicate_charge": "Undo a payment that should not have been taken",
+        "explanation": "Understand what happened, with no remedy sought yet",
+        "human_escalation": "Reach someone with authority to decide"
+      },
+      "true_label": "reverse_duplicate_charge"
+    },
+    "root_cause": {
+      "type": "choice",
+      "instructions": "What went wrong first, upstream of everything else?",
+      "criteria": {
+        "warehouse_mispick": "The wrong item was placed in a correctly labelled box",
+        "carrier_error": "The parcel was lost, delayed, or damaged in transit",
+        "payment_system_fault": "The billing system charged incorrectly",
+        "agent_follow_through": "A promised action was never carried out",
+        "customer_error": "The customer ordered the wrong thing"
+      },
+      "true_label": "warehouse_mispick"
+    },
+    "compensation": {
+      "type": "choice",
+      "instructions": "Which goodwill gesture applies under company compensation conditions?",
+      "criteria": {
+        "none": "Standard order issue resolved on first contact",
+        "apology_only": "Single minor delay with no financial error",
+        "shipping_refund": "Carrier delay where express shipping was paid",
+        "store_credit": "Customer account age >= 5 years AND experienced mispick + duplicate charge",
+        "expedited_replacement": "Explicit customer request for immediate replacement for an upcoming event"
+      },
+      "true_label": "store_credit"
+    },
+    "next_action": {
+      "type": "choice",
+      "instructions": "What single next step is required by company workflow policy?",
+      "criteria": {
+        "request_more_information": "We cannot act until the customer tells us more",
+        "issue_return_label": "Send the prepaid label that was promised",
+        "reverse_the_charge": "Refund the duplicate payment to the card",
+        "ship_replacement": "Dispatch the correct size",
+        "transfer_to_supervisor": "Hand the case to someone with authority"
+      },
+      "true_label": "transfer_to_supervisor"
+    }
+  }
+}

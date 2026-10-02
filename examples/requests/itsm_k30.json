@@ -1,0 +1,44 @@
+{
+  "state": {
+    "context": "Summary: Production database container deployment stuck in ContainerCreating state on worker-node-04.\nDescription: After triggering the nightly Helm chart rollout, the PostgreSQL StatefulSet pod failed to mount the persistent EBS volume. The kubelet logs show persistent volume attachment timeouts and storage driver detachment errors on AWS us-east-1a. Requesting urgent intervention to clear the volume lock and force reschedule the pod.\""
+  },
+  "questions": {
+    "itsm_ticket_routing_k30": {
+      "type": "choice",
+      "instructions": "Select the precise ITSM category matching the incident ticket:",
+      "criteria": {
+        "workplace_hardware_failure": "workplace_hardware_failure",
+        "workplace_peripherals_replacement": "workplace_peripherals_replacement",
+        "software_license_procurement": "software_license_procurement",
+        "software_standard_installation": "software_standard_installation",
+        "access_request_vpn": "access_request_vpn",
+        "access_request_github_repo": "access_request_github_repo",
+        "access_request_aws_iam": "access_request_aws_iam",
+        "identity_password_reset": "identity_password_reset",
+        "email_alias_creation": "email_alias_creation",
+        "network_wifi_connectivity": "network_wifi_connectivity",
+        "network_vpn_gateway_outage": "network_vpn_gateway_outage",
+        "network_dns_resolution": "network_dns_resolution",
+        "security_phishing_report": "security_phishing_report",
+        "security_malware_endpoint_alert": "security_malware_endpoint_alert",
+        "security_unauthorized_login_attempt": "security_unauthorized_login_attempt",
+        "cloud_aws_ec2_instance_failure": "cloud_aws_ec2_instance_failure",
+        "cloud_aws_ebs_storage_detachment": "cloud_aws_ebs_storage_detachment",
+        "cloud_aws_rds_failover": "cloud_aws_rds_failover",
+        "kubernetes_node_sched_failure": "kubernetes_node_sched_failure",
+        "kubernetes_pod_crashloop": "kubernetes_pod_crashloop",
+        "kubernetes_persistent_volume_lock": "kubernetes_persistent_volume_lock",
+        "database_postgresql_deadlock": "database_postgresql_deadlock",
+        "database_redis_eviction_storm": "database_redis_eviction_storm",
+        "database_slow_query_tuning": "database_slow_query_tuning",
+        "ci_cd_pipeline_stall": "ci_cd_pipeline_stall",
+        "ci_cd_docker_registry_auth": "ci_cd_docker_registry_auth",
+        "monitoring_pagerduty_alert_flood": "monitoring_pagerduty_alert_flood",
+        "facilities_badge_access": "facilities_badge_access",
+        "facilities_hvac_server_room": "facilities_hvac_server_room",
+        "general_hr_inquiry": "general_hr_inquiry"
+      },
+      "true_label": "kubernetes_persistent_volume_lock"
+    }
+  }
+}

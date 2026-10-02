@@ -1,0 +1,77 @@
+[project]
+name = "wazn-experimental"
+dynamic = ["version"]
+description = "Experimental inference library for Wazn, a choice model that scores a set of labels against a context"
+readme = "README.md"
+license = "Apache-2.0"
+# LICENSE comes from the GitHub repo; globs so a checkout without it still builds
+license-files = ["LICENSE*", "NOTICE*"]
+authors = [{ name = "Djellal M' Aniss" }]
+requires-python = ">=3.11"
+keywords = ["classification", "choice", "llm", "zero-shot", "few-shot"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# The base install is the client only: build requests, talk to a running
+# server, read responses. Everything that needs torch is in `server`.
+dependencies = ["httpx>=0.27"]
+
+[project.optional-dependencies]
+server = [
+    "torch>=2.5",
+    # Qwen3.5's text-config remapping and the DynamicCache layer API the
+    # engine branches are both recent; keep to the tested major.
+    "transformers>=5.17,<6",
+    "tokenizers>=0.21",
+    "safetensors>=0.4",
+    "huggingface_hub>=0.30",
+    "peft>=0.15",
+    "numpy>=1.26",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.7",
+]
+# Fused Triton kernels for Qwen3.5's linear-attention layers (NVIDIA GPUs).
+# transformers picks them up automatically; without them those layers run a
+# reference PyTorch loop. Linux only: on macOS the extra installs nothing.
+cuda = ["flash-linear-attention>=0.5; sys_platform == 'linux'"]
+
+[project.scripts]
+wazn-experimental = "wazn_experimental.cli:main"
+
+[project.urls]
+Repository = "https://github.com/numid/wazn-experimental"
+
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/wazn_experimental/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wazn_experimental"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "examples", "README.md", "LICENSE", "NOTICE", "CHANGELOG.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["runtime: needs the [server] extra (torch, transformers)"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+ignore = [
+    "E741",  # `l` for a label in comprehensions
+    "B905",  # zip() over rows built in lockstep; strict= would only add noise
+]

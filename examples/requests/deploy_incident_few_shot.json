@@ -1,0 +1,134 @@
+{
+  "state": {
+    "context": "INCIDENT #4471 - checkout-api elevated 5xx\n\n--- TOPOLOGY ---\n- checkout-api runs in three regions: us-east, eu-west, ap-south.\n- Each region has its own isolated Postgres primary. There is no cross-region database replication, and schema migrations are applied per region as part of a regional deploy.\n- A second service, refund-worker, runs in all three regions and writes to the same regional `orders` table as checkout-api. refund-worker deploys on its own schedule and has been on build rw-88 in all three regions for eleven days, unchanged.\n- Connection pooling: Both services connect to Postgres via a shared local PgBouncer instance in each region using transaction-level pooling mode.\n- Read/Write Split: POST /checkout writes directly to `orders` and sets `currency`. POST /refunds enqueues asynchronous refund jobs processed by refund-worker, which executes `UPDATE orders SET status = 'refunded' ...` and `INSERT INTO orders ...` for replacement/adjustment records.\n\n--- RELEASE TIMELINE (all times UTC, same day) ---\n- 09:02  v412 deployed to us-east only, as a canary. Application code changes only; no schema changes.\n- 11:30  v413 deployed to us-east and eu-west. v413 contains application code changes AND migration 0091.\n- ap-south received neither deploy and remains on v411.\n- Migration 0091 adds a column `currency` to `orders`, declared NOT NULL with no default value.\n- checkout-api v413 sets `currency` explicitly on every insert it performs. refund-worker build rw-88 does not set `currency` on its inserts.\n- 11:33  First automated refund batch triggered by periodic scheduled job following the 11:30 deployment.\n\n--- OBSERVED ---\n- us-east 5xx rate: flat at the 0.02% baseline from 09:02 through 11:33.\n- us-east 5xx begins climbing at 11:34, reaching 4.1% by 11:41.\n- eu-west 5xx begins climbing at 11:34, reaching 3.8% by 11:41.\n- ap-south 5xx: flat at the 0.02% baseline throughout, no change at any point.\n- Every failing request is a POST /refunds. POST /checkout succeeds normally in all three regions.\n- Logs on the failing requests: `ERROR: null value in column \"currency\" of relation \"orders\" violates not-null constraint`, with the originating statement attributed to refund-worker build rw-88.\n- Request volume, instance count, CPU, and memory are unchanged in all three regions across the whole window.\n- Database lock contention and CPU metrics remain at normal operational baselines across all regions."
+  },
+  "questions": {
+    "failing_component": {
+      "type": "choice",
+      "instructions": "Which component's writes are being rejected by the database?",
+      "criteria": {
+        "checkout_api": "checkout_api",
+        "refund_worker": "refund_worker",
+        "the_database": "the_database",
+        "an_upstream_client": "an_upstream_client"
+      },
+      "true_label": "refund_worker"
+    },
+    "v412_status": {
+      "type": "choice",
+      "instructions": "What does the evidence say about the v412 canary?",
+      "criteria": {
+        "implicated_as_cause": "v412 introduced the fault",
+        "exonerated_by_clean_window": "v412 ran without elevated errors long enough to rule it out",
+        "contributed_partially": "v412 is a necessary part of the cause",
+        "implicated_via_interaction": "v412 fails only in combination with migration 0091"
+      },
+      "true_label": "exonerated_by_clean_window"
+    },
+    "unaffected_region_cause": {
+      "type": "choice",
+      "instructions": "Why is ap-south still healthy?",
+      "criteria": {
+        "lower_traffic": "lower_traffic",
+        "migration_not_applied": "migration_not_applied",
+        "different_refund_worker": "different_refund_worker",
+        "failover_absorbed_it": "failover_absorbed_it"
+      },
+      "true_label": "migration_not_applied"
+    },
+    "blast_radius": {
+      "type": "choice",
+      "instructions": "Which regions are affected?",
+      "criteria": {
+        "us_east_only": "us_east_only",
+        "us_east_and_eu_west": "us_east_and_eu_west",
+        "all_three_regions": "all_three_regions",
+        "eu_west_and_ap_south": "eu_west_and_ap_south"
+      },
+      "true_label": "us_east_and_eu_west"
+    },
+    "code_rollback_effect": {
+      "type": "choice",
+      "instructions": "If checkout-api is rolled back from v413 to v412 in both affected regions, what happens to the errors?",
+      "criteria": {
+        "errors_stop": "The rollback resolves the incident",
+        "errors_persist_constraint_remains": {
+          "definition": "The errors continue, because the rejected writes come from elsewhere and the constraint is still in place",
+          "examples": [
+            "Service A deployed a migration adding a NOT NULL constraint without a default. Service B (not rolled back) writes to the same table without passing that column. What happens if Service A is rolled back?",
+            "Rolling back the API application binary leaves the active Postgres database schema and table constraints untouched.",
+            "Errors originate from a background worker query breaking a DB schema rule. Will rolling back the main web service stop the worker's DB errors?"
+          ]
+        },
+        "errors_worsen_checkout_also_fails": "The errors continue and POST /checkout begins failing too",
+        "errors_stop_then_return": "The errors stop until the next deploy"
+      },
+      "true_label": "errors_persist_constraint_remains"
+    },
+    "primary_failure_mechanism": {
+      "type": "choice",
+      "instructions": "What pattern caused this cross-service breaking change?",
+      "criteria": {
+        "uncoordinated_schema_migration": "uncoordinated_schema_migration",
+        "database_connection_starvation": "database_connection_starvation",
+        "circular_dependency_deadlock": "circular_dependency_deadlock",
+        "stale_cache_invalidation": "stale_cache_invalidation"
+      },
+      "true_label": "uncoordinated_schema_migration"
+    },
+    "checkout_endpoint_health": {
+      "type": "choice",
+      "instructions": "Why is POST /checkout continuing to succeed in all regions?",
+      "criteria": {
+        "sets_required_field": {
+          "definition": "checkout-api v413 explicitly populates the new currency field on insert",
+          "examples": [
+            "Service A inserts records passing the new 'currency' argument, while Service B inserts records without 'currency'. Why does Service A succeed?",
+            "The deployment upgraded checkout-api to include 'currency' in all its SQL INSERT statements.",
+            "Why are writes from checkout-api v413 passing table validation while older services fail?"
+          ]
+        },
+        "bypasses_orders_table": "checkout-api does not write to the orders table",
+        "uses_read_replica": "checkout-api routes writes to a separate database without the constraint",
+        "swallows_database_errors": "checkout-api catches database exceptions and returns 200 OK"
+      },
+      "true_label": "sets_required_field"
+    },
+    "permanent_code_fix": {
+      "type": "choice",
+      "instructions": "What service code update permanently fixes the issue while preserving the NOT NULL constraint?",
+      "criteria": {
+        "update_refund_worker": {
+          "definition": "Deploy a new refund-worker build that explicitly passes currency on inserts",
+          "examples": [
+            "Logs state: ERROR null value in column currency violates not-null constraint from refund-worker rw-88. Which code repository needs a fix?",
+            "To maintain the strict database constraint, which background service code must be updated to pass the missing 'currency' field?",
+            "Updating the write payload in refund-worker build rw-89 so its queries include the mandatory 'currency' key."
+          ]
+        },
+        "update_checkout_api": "Deploy checkout-api v414 with additional database retries",
+        "revert_migration": "Permanently drop the currency column from the orders table",
+        "restart_pgbouncer": "Flushing connection pools across affected regions"
+      },
+      "true_label": "update_refund_worker"
+    },
+    "incident_detection_delay": {
+      "type": "choice",
+      "instructions": "Why did 5xx errors begin at 11:34 UTC rather than immediately upon deploy completion at 11:30 UTC?",
+      "criteria": {
+        "scheduled_job_latency": {
+          "definition": "The first refund processing batch was triggered at 11:33 UTC after the deployment",
+          "examples": [
+            "Deploy completes at 11:30. A cron-triggered refund job executes its first post-deploy batch at 11:33. Why did errors start at 11:34?",
+            "Errors only started when the scheduled async refund worker executed its first batch job following the deployment window.",
+            "Why was there a 4-minute delay between schema migration completion and the first spike in database constraint errors?"
+          ]
+        },
+        "canary_delay": "us-east holds back traffic for 4 minutes after deployment",
+        "pgbouncer_cache_ttl": "PgBouncer cached the old table schema for 4 minutes",
+        "database_replication_lag": "Migration execution took 4 minutes to commit"
+      },
+      "true_label": "scheduled_job_latency"
+    }
+  }
+}
