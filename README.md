@@ -10,13 +10,31 @@ The label set is yours, per request, with no retraining: two labels or a thousan
 
 ## Install
 
+Python 3.11+. Use a virtual environment, and pick the install that matches what you want to do:
+
+| You want | Install |
+|---|---|
+| Run the model locally (server + in-process use) | `pip install --pre "wazn-experimental[server]"` |
+| Same, on Linux with an NVIDIA GPU, with fused kernels | `pip install --pre "wazn-experimental[server,cuda]"` |
+| Only talk to a server running elsewhere (no torch) | `pip install --pre wazn-experimental` |
+
 ```bash
-pip install "wazn-experimental[server]"         # the model + local server
-pip install "wazn-experimental[server,cuda]"    # + fused kernels, on Linux with an NVIDIA GPU
-pip install wazn-experimental                   # client only (no torch), to talk to a server elsewhere
+python -m venv .venv && source .venv/bin/activate
+pip install --pre "wazn-experimental[server]"
+wazn-experimental --help        # check it installed
 ```
 
-Python 3.11+. Runs on CUDA, Apple Silicon (MPS) or CPU. The first load downloads the backbone from the Hugging Face Hub.
+With [uv](https://docs.astral.sh/uv/): `uv pip install --pre "wazn-experimental[server]"`, or run the server without installing anything into your project: `uvx --prerelease allow --from "wazn-experimental[server]" wazn-experimental serve`.
+
+Notes:
+
+- **`--pre` is needed** while every release is an alpha (`0.1.0aN`); without it pip reports "no matching distribution". You can also pin a version, e.g. `wazn-experimental==0.1.0a1`.
+- **Keep the quotes** around `"wazn-experimental[server]"`: zsh (the macOS default shell) treats the brackets as a glob pattern.
+- The `[server]` extra pulls in PyTorch, which is a large download (several GB on Linux with CUDA). The client-only install is a few small packages.
+- On macOS the `[cuda]` extra installs nothing; it is for Linux with an NVIDIA GPU.
+- To upgrade: `pip install --pre -U "wazn-experimental[server]"`.
+
+Runs on CUDA, Apple Silicon (MPS) or CPU. The first load downloads the backbone from the Hugging Face Hub.
 
 ### Hardware and speed
 
