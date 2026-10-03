@@ -41,7 +41,7 @@ from .errors import RequestError
 
 CHOICE_TYPE = "choice"
 _STATE_KEYS = {"rules", "context"}
-_QUESTION_KEYS = {"type", "instructions", "criteria", "true_label"}
+_QUESTION_KEYS = {"type", "instructions", "criteria", "true_label", "tournament"}
 _LABEL_KEYS = {"definition", "examples"}
 _REQUEST_KEYS = {"state", "questions"}
 
@@ -135,6 +135,63 @@ _EXAMPLES_ON_LABELS = (
 )
 
 
+_TOURNAMENT_KEYS = {"group_size", "top_k", "seed"}
+
+
+@dataclass(frozen=True)
+class Tournament:
+    """Answer an instruction by tournament, for a large label set.
+
+    Its labels are scored in groups of `group_size`, the `top_k` of each
+    group advance, and the survivors are regrouped until a single group is
+    left; that group's winner is the answer. The model never compares more
+    than `group_size` labels at once, however many the instruction has.
+    `seed` shuffles the labels before the first round; without it the groups
+    follow the labels' order.
+    """
+
+    group_size: int
+    top_k: int = 1
+    seed: int | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in ("group_size", "top_k"):
+            value = getattr(self, field_name)
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise RequestError(f"tournament {field_name} must be an integer, got {value!r}")
+        if self.seed is not None and (not isinstance(self.seed, int) or isinstance(self.seed, bool)):
+            raise RequestError(f"tournament seed must be an integer, got {self.seed!r}")
+        if self.group_size < 2:
+            raise RequestError(f"tournament group_size must be at least 2, got {self.group_size}")
+        if not 1 <= self.top_k < self.group_size:
+            raise RequestError(
+                f"tournament top_k must be in [1, group_size), got top_k={self.top_k} with "
+                f"group_size={self.group_size}; otherwise a group never shrinks"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"group_size": self.group_size, "top_k": self.top_k}
+        if self.seed is not None:
+            out["seed"] = self.seed
+        return out
+
+    @classmethod
+    def coerce(cls, value: "Tournament | Mapping[str, Any]", where: str) -> "Tournament":
+        if isinstance(value, Tournament):
+            return value
+        if not isinstance(value, Mapping):
+            raise RequestError(f"{where}: `tournament` must be an object with {sorted(_TOURNAMENT_KEYS)}")
+        unknown = set(value) - _TOURNAMENT_KEYS
+        if unknown:
+            raise RequestError(
+                f"{where}: tournament has unknown fields {sorted(unknown)}; "
+                f"expected {sorted(_TOURNAMENT_KEYS)}"
+            )
+        if "group_size" not in value:
+            raise RequestError(f"{where}: tournament needs a group_size")
+        return cls(**value)
+
+
 @dataclass
 class Instruction:
     """A question about the context, and the labels to choose between.
@@ -144,12 +201,17 @@ class Instruction:
     `instruction_0`, `instruction_1`, ... in order. `true_label` is optional:
     when given, the response reports whether the model got it right. It is
     read after scoring and never reaches the model.
+
+    `tournament` answers this instruction by tournament (see `Tournament`);
+    without it the model compares all of its labels at once. Each instruction
+    of a request chooses for itself.
     """
 
     text: str
     labels: LabelsLike
     name: str | None = None
     true_label: str | None = None
+    tournament: Tournament | Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         self.text = _text(self.text, "an instruction")
@@ -157,6 +219,8 @@ class Instruction:
             raise RequestError("an instruction cannot be empty")
         self.labels = _labels(self.labels)
         where = f"instruction {self.name!r}" if self.name else "an instruction"
+        if self.tournament is not None:
+            self.tournament = Tournament.coerce(self.tournament, where)
 
         if len(self.labels) < 2:
             raise RequestError(f"{where} needs at least 2 labels, got {len(self.labels)}")
@@ -177,6 +241,13 @@ class Instruction:
     def label_names(self) -> list[str]:
         return [lab.name for lab in self.labels]
 
+    @property
+    def compared_at_once(self) -> int:
+        """The most labels the model compares in one set for this instruction."""
+        if self.tournament is None:
+            return len(self.labels)
+        return min(len(self.labels), self.tournament.group_size)
+
     def label(self, name: str) -> Label:
         for lab in self.labels:
             if lab.name == name:
@@ -191,6 +262,8 @@ class Instruction:
         }
         if self.true_label is not None:
             out["true_label"] = self.true_label
+        if self.tournament is not None:
+            out["tournament"] = self.tournament.to_dict()
         return out
 
     @classmethod
@@ -211,7 +284,7 @@ class Instruction:
         if d.get("type", CHOICE_TYPE) != CHOICE_TYPE:
             raise RequestError(f"question type {d['type']!r} is not supported; only 'choice' is")
         return cls(text=d["instructions"], labels=d["criteria"], name=name,
-                   true_label=d.get("true_label"))
+                   true_label=d.get("true_label"), tournament=d.get("tournament"))
 
 
 @dataclass
@@ -327,37 +400,3 @@ class Request:
     def coerce(cls, value: "Request | Mapping[str, Any]") -> "Request":
         """A `Request`, or the wire-format dict of one."""
         return value if isinstance(value, Request) else cls.from_dict(value)
-
-
-@dataclass
-class PredictOptions:
-    """How to answer. With `group_size` set the answer is a tournament: the
-    labels are scored in groups of `group_size`, the `top_k` of each group
-    advance, and the survivors are regrouped until one group is left. The
-    model then never compares more than `group_size` labels at once, which is
-    how to ask it about a large label set. `seed` shuffles the labels before
-    the first round; without it the groups follow the request's order."""
-
-    group_size: int | None = None
-    top_k: int = 1
-    seed: int | None = None
-    usage_detail: bool = False
-
-    def __post_init__(self) -> None:
-        if self.group_size is None:
-            return
-        if self.group_size < 2:
-            raise RequestError(f"group_size must be at least 2, got {self.group_size}")
-        if not 1 <= self.top_k < self.group_size:
-            raise RequestError(
-                f"top_k must be in [1, group_size), got top_k={self.top_k} with "
-                f"group_size={self.group_size}; otherwise a group never shrinks"
-            )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "group_size": self.group_size,
-            "top_k": self.top_k,
-            "seed": self.seed,
-            "usage_detail": self.usage_detail,
-        }

@@ -27,9 +27,9 @@ class Answer:
     estimate that no label applies, and `is_none` is that estimate against the
     model's threshold; both are None for a model without a NONE gate.
 
-    In a tournament (`group_size` set) `probabilities` covers the final group
-    only, `none_probability` is read on that group, and `rounds` records
-    every group along the way.
+    For an instruction answered by tournament, `probabilities` covers the
+    final group only, `none_probability` is read on that group, and `rounds`
+    records every group along the way (None otherwise).
     """
 
     choice: str

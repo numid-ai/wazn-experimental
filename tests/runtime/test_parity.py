@@ -61,11 +61,13 @@ def pair(tokenizer):
 
 
 def research_format(request: Request) -> dict:
-    """The research engine's request: definitions only under `criteria`, and
-    examples at question level as [{input, label}]."""
+    """The research engine's request: definitions only under `criteria`,
+    examples at question level as [{input, label}], and no per-question
+    tournament (it takes one for the whole request, as arguments)."""
     payload = request.to_dict()
     for ins in request.instructions:
         q = payload["questions"][ins.name]
+        q.pop("tournament", None)
         q["criteria"] = {lab.name: lab.definition for lab in ins.labels}
         shots = [{"input": x, "label": lab.name} for lab in ins.labels for x in lab.examples]
         if shots:
@@ -77,14 +79,18 @@ def research_format(request: Request) -> dict:
 def test_same_distributions_as_the_research_engine(pair, path):
     research, wazn = pair
     request = Request.from_file(path)
-    options = {"group_size": 10, "top_k": 2} if request.num_labels > 30 else {}
+    tournaments = {i.tournament for i in request.instructions if i.tournament is not None}
 
     payload = research_format(request)
-    if options:
-        theirs = research.infer_tournament(payload, options["group_size"], top_k=options["top_k"])
+    if tournaments:
+        # the research engine runs one tournament for every question, so only
+        # requests whose questions share it can be compared
+        assert len(tournaments) == 1 and all(i.tournament for i in request.instructions)
+        t = tournaments.pop()
+        theirs = research.infer_tournament(payload, t.group_size, top_k=t.top_k, seed=t.seed)
     else:
         theirs = research.infer(payload)
-    ours = wazn.predict(request, **options)
+    ours = wazn.predict(request)
 
     for name, answer in theirs.answers.items():
         assert ours[name].choice == answer.choice

@@ -29,7 +29,7 @@ from typing import Sequence
 import numpy as np
 import torch
 
-from ..request import Instruction, PredictOptions, Request
+from ..request import Instruction, Request
 from ..response import Answer, Response, Usage
 from .formatting import render_state
 from .model import WaznModel, expand_cache
@@ -86,41 +86,23 @@ class WaznEngine:
 
     # ------------------------------------------------------------ public API
 
-    def predict(self, request: Request, options: PredictOptions | None = None) -> Response:
-        options = options or PredictOptions()
-        if options.group_size is not None:
-            response = self._tournament(request, options.group_size, options.top_k, options.seed)
-        else:
-            response = self._plain(request)
-        response.usage_detail = options.usage_detail
-        return response
+    def predict(self, request: Request, usage_detail: bool = False) -> Response:
+        """Answer every instruction of a request, each in its own mode.
 
-    # ---------------------------------------------------------------- modes
-
-    def _plain(self, request: Request) -> Response:
-        ins = request.instructions
-        probs, gates, usage, warnings = self._score(request, ins, [i.label_names for i in ins])
-        answers = {}
-        for i, p, q in zip(ins, probs, gates):
-            dist = {name: float(p[k]) for k, name in enumerate(i.label_names)}
-            answers[i.name] = self._answer(i, dist, q)
-        return Response(self.model_name, answers, usage, warnings=warnings)
-
-    def _tournament(
-        self, request: Request, group_size: int, top_k: int, seed: int | None
-    ) -> Response:
-        """Each instruction's labels are cut into groups of `group_size`,
-        every group is scored on its own, its `top_k` advance, and the
-        survivors are regrouped until at most `group_size` remain; that final
-        group is scored once more. A trailing group of at most `top_k`
-        labels advances without a pass (a bye). Every group of every
-        instruction in a round shares one prefill of the context."""
+        An instruction without a tournament is one set: all of its labels,
+        scored in the first round. An instruction with one has its labels
+        cut into groups of `group_size`; every group is scored on its own,
+        its `top_k` advance, and the survivors are regrouped until at most
+        `group_size` remain, which are scored once more as the final group.
+        A trailing group of at most `top_k` labels advances without a pass (a
+        bye). Each round scores every pending set of every instruction in one
+        pass, so the context is still read once per round.
+        """
         ins = request.instructions
         alive = [list(i.label_names) for i in ins]
-        if seed is not None:
-            rng = random.Random(seed)
-            for names in alive:
-                rng.shuffle(names)
+        for i, names in zip(ins, alive):
+            if i.tournament is not None and i.tournament.seed is not None:
+                random.Random(i.tournament.seed).shuffle(names)
 
         rounds: list[list[dict]] = [[] for _ in ins]
         final: list[tuple[dict[str, float], float | None] | None] = [None] * len(ins)
@@ -130,15 +112,16 @@ class WaznEngine:
         while any(f is None for f in final):
             plan: list[tuple[int, list[str], bool]] = []
             byes: list[list[str]] = [[] for _ in ins]
-            for j, names in enumerate(alive):
+            for j, (i, names) in enumerate(zip(ins, alive)):
                 if final[j] is not None:
                     continue
-                if len(names) <= group_size:
+                t = i.tournament
+                if t is None or len(names) <= t.group_size:
                     plan.append((j, names, True))
                     continue
-                for g in range(0, len(names), group_size):
-                    group = names[g : g + group_size]
-                    if len(group) <= top_k:
+                for g in range(0, len(names), t.group_size):
+                    group = names[g : g + t.group_size]
+                    if len(group) <= t.top_k:
                         byes[j].extend(group)
                     else:
                         plan.append((j, group, False))
@@ -159,7 +142,7 @@ class WaznEngine:
                 else:
                     # keep the seeding order among survivors, so the next
                     # round's groups are not stacked by rank
-                    top = sorted(np.argsort(-p.numpy(), kind="stable")[:top_k])
+                    top = sorted(np.argsort(-p.numpy(), kind="stable")[: ins[j].tournament.top_k])
                     advanced[j].extend(group[k] for k in top)
 
             for j in range(len(ins)):
@@ -174,8 +157,11 @@ class WaznEngine:
 
         answers = {}
         for i, (dist, q), trace in zip(ins, final, rounds):
+            # only a tournament has rounds to report
+            trace = trace if i.tournament is not None else None
             answers[i.name] = self._answer(i, dist, q, rounds=trace)
-        return Response(self.model_name, answers, usage, warnings=warnings)
+        return Response(self.model_name, answers, usage, warnings=warnings,
+                        usage_detail=usage_detail)
 
     def _answer(
         self, ins: Instruction, dist: dict[str, float], gate: float | None, rounds=None

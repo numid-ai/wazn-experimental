@@ -20,7 +20,7 @@ import torch
 
 from .._defaults import DEFAULT_MODEL
 from .._version import __version__
-from ..request import PredictOptions, Request
+from ..request import Request
 from ..response import Response
 from .engine import WaznEngine
 from .loading import fast_kernels_available, load_checkpoint
@@ -65,24 +65,13 @@ class Wazn:
     def name(self) -> str:
         return self.engine.model_name
 
-    def predict(
-        self,
-        request: Request | Mapping[str, Any],
-        *,
-        group_size: int | None = None,
-        top_k: int = 1,
-        seed: int | None = None,
-        usage_detail: bool = False,
-    ) -> Response:
-        """Answer every instruction in one request. With `group_size`, by
-        tournament (see `PredictOptions`)."""
-        return self.predict_with(
-            Request.coerce(request), PredictOptions(group_size, top_k, seed, usage_detail)
-        )
-
-    def predict_with(self, request: Request, options: PredictOptions) -> Response:
+    def predict(self, request: Request | Mapping[str, Any], *, usage_detail: bool = False) -> Response:
+        """Answer every instruction in one request; an instruction with a
+        `tournament` is answered by tournament (see `Tournament`).
+        `usage_detail` breaks the token usage down."""
+        request = Request.coerce(request)
         start = time.perf_counter()
-        response = self.engine.predict(request, options)
+        response = self.engine.predict(request, usage_detail=usage_detail)
         # probabilities are read back to the CPU, which waits for the device
         response.prediction_seconds = round(time.perf_counter() - start, 4)
         return response

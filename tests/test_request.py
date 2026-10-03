@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from wazn_experimental import Instruction, Label, PredictOptions, Request, RequestError
+from wazn_experimental import Instruction, Label, Request, RequestError, Tournament
 
 EXAMPLES = sorted((Path(__file__).parents[1] / "examples" / "requests").glob("*.json"))
 
@@ -169,4 +169,34 @@ def test_every_shipped_example_is_a_valid_request(path):
 @pytest.mark.parametrize("group_size, top_k", [(1, 1), (4, 4), (4, 0)])
 def test_impossible_tournaments_are_refused(group_size, top_k):
     with pytest.raises(RequestError):
-        PredictOptions(group_size=group_size, top_k=top_k)
+        Tournament(group_size=group_size, top_k=top_k)
+
+
+def test_the_tournament_is_set_per_instruction():
+    r = make(instructions=[
+        Instruction("Intent?", [f"i{n}" for n in range(40)], name="intent",
+                    tournament=Tournament(group_size=10, top_k=2, seed=3)),
+        Instruction("Tone?", ["neg", "pos"], name="tone"),
+    ])
+    d = r.to_dict()
+    assert d["questions"]["intent"]["tournament"] == {"group_size": 10, "top_k": 2, "seed": 3}
+    assert "tournament" not in d["questions"]["tone"]
+    back = Request.from_dict(d)
+    assert back["intent"].tournament == Tournament(10, 2, 3)
+    assert back["tone"].tournament is None
+    assert [i.compared_at_once for i in back.instructions] == [10, 2]
+
+
+@pytest.mark.parametrize(
+    "tournament, match",
+    [
+        ({"top_k": 2}, "needs a group_size"),
+        ({"group_size": 4, "rounds": 2}, "unknown fields"),
+        ({"group_size": "4"}, "must be an integer"),
+        ([4, 2], "must be an object"),
+    ],
+)
+def test_bad_wire_tournaments_are_refused(tournament, match):
+    with pytest.raises(RequestError, match=match):
+        Request.from_dict({"state": "s", "questions": {"q": {
+            "instructions": "Q?", "criteria": ["a", "b"], "tournament": tournament}}})

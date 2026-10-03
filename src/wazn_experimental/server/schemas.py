@@ -27,6 +27,12 @@ class LabelModel(_Strict):
     )
 
 
+class TournamentModel(_Strict):
+    group_size: int = Field(..., ge=2, description="Labels compared at once in each group.")
+    top_k: int = Field(1, ge=1, description="Labels advancing from each group.")
+    seed: int | None = Field(None, description="Shuffle the labels before the first round.")
+
+
 class QuestionModel(_Strict):
     type: Literal["choice"] = "choice"
     instructions: str = Field(..., description="The question to answer about the context.")
@@ -35,6 +41,7 @@ class QuestionModel(_Strict):
         description="Label name -> definition, or -> {definition, examples}; or bare names.",
     )
     true_label: str | None = Field(None, description="Optional expected answer, for spot checks.")
+    tournament: TournamentModel | None = Field(None, description="Answer this question by tournament.")
 
 
 class RequestModel(_Strict):
@@ -43,11 +50,6 @@ class RequestModel(_Strict):
 
 
 class OptionsModel(_Strict):
-    group_size: int | None = Field(
-        None, ge=2, description="Answer by tournament over groups of this many labels."
-    )
-    top_k: int = Field(1, ge=1, description="Labels advancing from each tournament group.")
-    seed: int | None = Field(None, description="Shuffle labels before the first round.")
     usage_detail: bool = Field(False, description="Break token usage down.")
 
 

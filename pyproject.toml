@@ -43,7 +43,7 @@ cuda = ["flash-linear-attention>=0.5; sys_platform == 'linux'"]
 wazn-experimental = "wazn_experimental.cli:main"
 
 [project.urls]
-Repository = "https://github.com/numid/wazn-experimental"
+Repository = "https://github.com/numid-ai/wazn-experimental"
 
 [dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.6"]

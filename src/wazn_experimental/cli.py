@@ -20,7 +20,7 @@ from ._defaults import DEFAULT_MODEL
 from ._version import __version__
 from .client import DEFAULT_URL
 from .errors import WaznError
-from .request import PredictOptions, Request
+from .request import Request
 
 
 def _add_model_args(p: argparse.ArgumentParser, default: str | None) -> None:
@@ -32,13 +32,6 @@ def _add_model_args(p: argparse.ArgumentParser, default: str | None) -> None:
                    help="auto: the dtype the checkpoint was trained in")
     p.add_argument("--candidate-chunk", type=int,
                    help="hybrid backbones: labels encoded per forward pass")
-
-
-def _add_predict_options(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--group-size", type=int, help="answer by tournament over groups of this size")
-    p.add_argument("--top-k", type=int, default=1, help="labels advancing from each group")
-    p.add_argument("--seed", type=int, help="shuffle labels before the first round")
-    p.add_argument("--usage-detail", action="store_true", help="break token usage down")
 
 
 def _load(a):
@@ -66,16 +59,15 @@ def cmd_predict(a) -> None:
         requests = [Request.from_json(line) for line in text.splitlines() if line.strip()]
     else:
         requests = [Request.from_json(text)]
-    options = PredictOptions(a.group_size, a.top_k, a.seed, a.usage_detail)
 
     if a.model:
         wazn = _load(a)
-        responses = [wazn.predict_with(r, options) for r in requests]
+        responses = [wazn.predict(r, usage_detail=a.usage_detail) for r in requests]
     else:
         from .client import Client
 
         with Client(a.url) as client:
-            responses = [client.predict(r, **vars(options)) for r in requests]
+            responses = [client.predict(r, usage_detail=a.usage_detail) for r in requests]
 
     for r in responses:
         for w in r.warnings:
@@ -115,7 +107,7 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--jsonl", action="store_true", help="one request per line")
     s.add_argument("--url", default=DEFAULT_URL, help="server to ask (ignored with --model)")
     _add_model_args(s, default=None)  # no --model: ask the server at --url
-    _add_predict_options(s)
+    s.add_argument("--usage-detail", action="store_true", help="break token usage down")
     s.set_defaults(fn=cmd_predict)
 
     s = sub.add_parser("export", help="turn a training run into a publishable checkpoint")

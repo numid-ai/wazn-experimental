@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from wazn_experimental import Instruction, Label, Request
+from wazn_experimental import Instruction, Label, Request, Tournament
 from wazn_experimental.runtime.config import TAG_TOKENS
 
 EXAMPLES = sorted((Path(__file__).parents[2] / "examples" / "requests").glob("*.json"))
@@ -140,18 +140,57 @@ def test_truncation_is_reported(make_model):
     assert r.usage.candidate_tokens <= 2 * 12
 
 
+def with_tournament(ins: Instruction, **t) -> Instruction:
+    return Instruction(ins.text, ins.labels, name=ins.name, true_label=ins.true_label,
+                       tournament=Tournament(**t))
+
+
 def test_tournament_with_one_group_matches_plain_inference(wazn):
     plain = wazn.predict(MULTI)
-    t = wazn.predict(MULTI, group_size=8, top_k=1)
+    t = wazn.predict(Request(MULTI.context, [with_tournament(i, group_size=8) for i in
+                                             MULTI.instructions], rules=MULTI.rules))
     for name in plain.answers:
         assert t[name].probabilities == pytest.approx(plain[name].probabilities, abs=1e-5)
         assert len(t[name].rounds) == 1
+        assert plain[name].rounds is None
+
+
+def test_each_instruction_chooses_its_own_mode(wazn):
+    """A tournament and a plain question in one request each get what they
+    would get alone: the tournament does not leak into the other."""
+    big = Instruction("Pick one", [f"option {i}" for i in range(23)], name="big",
+                      tournament=Tournament(group_size=5, top_k=2, seed=0))
+    tone = MULTI["tone"]
+    mixed = wazn.predict(Request(MULTI.context, [big, tone], rules=MULTI.rules))
+    alone_big = wazn.predict(Request(MULTI.context, [big], rules=MULTI.rules))["big"]
+    alone_tone = wazn.predict(Request(MULTI.context, [tone], rules=MULTI.rules))["tone"]
+
+    # same groups and survivors in every round; scores equal up to float noise
+    shape = [[list(g) for g in rnd["groups"]] for rnd in alone_big.rounds]
+    assert [[list(g) for g in rnd["groups"]] for rnd in mixed["big"].rounds] == shape
+    for got, want in zip(mixed["big"].rounds, alone_big.rounds):
+        for g, h in zip(got["groups"], want["groups"]):
+            assert g == pytest.approx(h, abs=1e-4)
+    assert mixed["big"].probabilities == pytest.approx(alone_big.probabilities, abs=1e-4)
+    assert mixed["tone"].rounds is None
+    assert list(mixed["tone"].probabilities) == tone.label_names  # all 3, one set
+    assert mixed["tone"].probabilities == pytest.approx(alone_tone.probabilities, abs=1e-4)
+
+
+def test_two_tournaments_keep_their_own_settings(wazn):
+    a = Instruction("Pick one", [f"a{i}" for i in range(12)], name="a",
+                    tournament=Tournament(group_size=4, top_k=1))
+    b = Instruction("Pick one", [f"b{i}" for i in range(12)], name="b",
+                    tournament=Tournament(group_size=6, top_k=2))
+    r = wazn.predict(Request("ctx", [a, b]))
+    assert all(len(g) <= 4 for rnd in r["a"].rounds for g in rnd["groups"])
+    assert [len(g) for g in r["b"].rounds[0]["groups"]] == [6, 6]
 
 
 def test_tournament_never_compares_more_than_group_size(wazn):
     labels = [f"option {i}" for i in range(23)]
-    r = wazn.predict(Request("ctx", [Instruction("Pick one", labels, name="q")]),
-                     group_size=5, top_k=2, seed=0)
+    r = wazn.predict(Request("ctx", [Instruction("Pick one", labels, name="q",
+                                                 tournament=Tournament(5, top_k=2, seed=0))]))
     answer = r["q"]
     assert len(answer.rounds) >= 3
     for rnd in answer.rounds:
@@ -163,8 +202,8 @@ def test_tournament_never_compares_more_than_group_size(wazn):
 
 def test_tournament_survivors_are_each_groups_top_k(wazn):
     labels = [f"option {i}" for i in range(12)]
-    answer = wazn.predict(Request("ctx", [Instruction("Pick one", labels, name="q")]),
-                          group_size=4, top_k=2)["q"]
+    answer = wazn.predict(Request("ctx", [Instruction("Pick one", labels, name="q",
+                                                      tournament=Tournament(4, top_k=2))]))["q"]
     first, second = answer.rounds[0], answer.rounds[1]
     expected = []
     for group in first["groups"]:
@@ -176,8 +215,7 @@ def test_tournament_survivors_are_each_groups_top_k(wazn):
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
 def test_every_shipped_example_runs(wazn, path):
     request = Request.from_file(path)
-    options = {"group_size": 10, "top_k": 2} if request.num_labels > 30 else {}
-    r = wazn.predict(request, **options)
+    r = wazn.predict(request)
     assert set(r.answers) == {i.name for i in request.instructions}
 
 

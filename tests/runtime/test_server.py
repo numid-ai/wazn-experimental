@@ -6,7 +6,7 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from wazn_experimental import Client, Instruction, Request, RequestError  # noqa: E402
+from wazn_experimental import Client, Instruction, Request, RequestError, Tournament  # noqa: E402
 from wazn_experimental.server.app import Limits, create_app  # noqa: E402
 
 REQUEST = Request(
@@ -44,10 +44,16 @@ def test_usage_detail_is_opt_in(client):
 
 
 def test_label_limit_points_to_tournaments(client):
-    big = Request("ctx", [Instruction("Pick", [f"l{i}" for i in range(41)], name="q")])
+    labels = [f"l{i}" for i in range(41)]
     with pytest.raises(RequestError, match="tournament"):
-        client.predict(big)
-    assert client.predict(big, group_size=10, top_k=2).answer.choice.startswith("l")
+        client.predict(Request("ctx", [Instruction("Pick", labels, name="q")]))
+    ok = Request("ctx", [
+        Instruction("Pick", labels, name="q", tournament=Tournament(group_size=10, top_k=2)),
+        Instruction("Tone?", ["neg", "pos"], name="tone"),  # plain, well under the limit
+    ])
+    r = client.predict(ok)
+    assert r["q"].choice.startswith("l") and r["q"].rounds
+    assert r["tone"].rounds is None
 
 
 @pytest.mark.parametrize("body", [
@@ -55,7 +61,9 @@ def test_label_limit_points_to_tournaments(client):
     {"request": {"state": "s", "questions": {"q": {"instructions": "Q?", "criteria": ["a"]}}}},
     {"request": {"state": "s", "questions": {"q": {"instructions": "Q?", "criteria": ["a", "b"],
                                                    "bogus": 1}}}},
-    {"request": REQUEST.to_dict(), "options": {"group_size": 2, "top_k": 2}},
+    {"request": {"state": "s", "questions": {"q": {  # a group that never shrinks
+        "instructions": "Q?", "criteria": ["a", "b", "c"], "tournament": {"group_size": 2, "top_k": 2}}}}},
+    {"request": REQUEST.to_dict(), "options": {"group_size": 2}},  # no longer a request option
     {"request": {"state": "s", "questions": {"q": {  # the old question-level examples
         "instructions": "Q?", "criteria": ["a", "b"], "examples": [{"input": "x", "label": "a"}]}}}},
 ])

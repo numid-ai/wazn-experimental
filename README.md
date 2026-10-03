@@ -90,7 +90,7 @@ response = model.predict(request)
 |---|---|
 | `context` | The text to answer about. A string, or a list of parts (a document and a message about it), joined by a blank line. |
 | `rules` | Optional. The policy or procedure that should settle the answer. |
-| `Instruction(text, labels, name=None, true_label=None)` | One question about the context. A request can carry several; the context is read once and shared by all of them. |
+| `Instruction(text, labels, name=None, true_label=None, tournament=None)` | One question about the context. A request can carry several; the context is read once and shared by all of them. `tournament` answers this instruction by [tournament](#many-labels-tournaments). |
 | `Label(name, definition="", examples=[])` | One possible answer. **The model reads the definition**, not the name (it falls back to the name when there is no definition), so write definitions that say when the label applies. `examples` is a list of strings: inputs that should get this label. Only this label reads them, so they help the model tell labels apart without biasing the others. Labels can also be given as plain names or a `{"name": "definition"}` mapping. |
 | `true_label` | Optional. If you know the answer, the response tells you whether the model got it right (`answer.correct`). It is never shown to the model. |
 
@@ -128,13 +128,25 @@ wazn-experimental predict examples/requests/aerospace_rules_k3.json --model numi
 
 Wazn can classify among a very large number of classes, even 1,000 or more, in a single request.
 
-By default the model compares all of an instruction's labels at once, which suits up to a few dozen. For larger label sets, answer by tournament:
+By default the model compares all of an instruction's labels at once, which suits up to a few dozen. For a larger label set, give that instruction a tournament:
 
 ```python
-response = client.predict(request, group_size=10, top_k=2, seed=0)
+from wazn_experimental import Tournament
+
+request = Request(
+    context="How often should I get my oil changed?",
+    instructions=[
+        Instruction("What is the user asking for?", labels=intents,   # 1,000 labels
+                    tournament=Tournament(group_size=10, top_k=2, seed=0), name="intent"),
+        Instruction("What is the tone?", labels=["negative", "neutral", "positive"],
+                    name="tone"),                                      # answered as usual
+    ],
+)
 ```
 
-The labels are split into groups of `group_size`. The `top_k` of each group advance, and the survivors are regrouped until a single group is left. The model then never compares more than `group_size` labels at a time, however many there are. With 1,000 labels, groups of 10 and `top_k=2`, that is four rounds (1,000 → 200 → 40 → 8, then the final group), and the context is read once per round. The server's `--max-labels` limit doesn't apply to tournament requests. `answer.probabilities` covers the final group, and `answer.rounds` records every group along the way. See [`examples/tournament.py`](examples/tournament.py).
+The tournament is set per instruction: each one in a request picks its own mode and settings, so a 1,000-label intent question and a 3-label tone question go in the same request. In JSON it is a field of the question: `"tournament": {"group_size": 10, "top_k": 2, "seed": 0}`.
+
+The labels are split into groups of `group_size`. The `top_k` of each group advance, and the survivors are regrouped until a single group is left. The model then never compares more than `group_size` labels at a time, however many there are. With 1,000 labels, groups of 10 and `top_k=2`, that is four rounds (1,000 → 200 → 40 → 8, then the final group). Each round scores every instruction's pending groups together, so the context is read once per round. `seed` shuffles the labels before the first round. `answer.probabilities` covers the final group, and `answer.rounds` records every group along the way (it is `None` for an instruction without a tournament). The server's `--max-labels` limit applies to what is compared at once, so it counts `group_size` for a tournament. See [`examples/tournament.py`](examples/tournament.py).
 
 ## Server
 
@@ -145,7 +157,7 @@ wazn-experimental serve [--model numid/wazn-2b-v0.1] [--host 127.0.0.1] [--port 
 
 | Endpoint | |
 |---|---|
-| `POST /predict` | `{"request": {...}, "options": {"group_size", "top_k", "seed", "usage_detail"}}` |
+| `POST /predict` | `{"request": {...}, "options": {"usage_detail": false}}` |
 | `GET /info` | model, backbone, token budgets, limits |
 | `GET /health` | status, counters, GPU memory |
 

@@ -19,7 +19,7 @@ from typing import Any, Mapping
 import httpx
 
 from .errors import RequestError, ServerError
-from .request import PredictOptions, Request
+from .request import Request
 from .response import Response
 
 DEFAULT_URL = "http://127.0.0.1:8000"
@@ -43,24 +43,13 @@ class Client:
 
     # ----------------------------------------------------------------- calls
 
-    def predict(
-        self,
-        request: Request | Mapping[str, Any],
-        *,
-        group_size: int | None = None,
-        top_k: int = 1,
-        seed: int | None = None,
-        usage_detail: bool = False,
-    ) -> Response:
-        """Answer every instruction in one request.
-
-        `group_size`/`top_k`/`seed` answer by tournament instead; see
-        `PredictOptions`.
-        """
+    def predict(self, request: Request | Mapping[str, Any], *, usage_detail: bool = False) -> Response:
+        """Answer every instruction in one request; an instruction with a
+        `tournament` is answered by tournament (see `Tournament`).
+        `usage_detail` breaks the token usage down."""
         request = Request.coerce(request)
-        options = PredictOptions(group_size, top_k, seed, usage_detail)
         payload = self._post(
-            "/predict", {"request": request.to_dict(), "options": options.to_dict()}
+            "/predict", {"request": request.to_dict(), "options": {"usage_detail": usage_detail}}
         )
         return Response.from_dict(payload)
 

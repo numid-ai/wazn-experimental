@@ -17,7 +17,7 @@ between 0.x releases.
 from ._version import __version__
 from .client import Client
 from .errors import RequestError, RuntimeExtraMissing, ServerError, WaznError
-from .request import Instruction, Label, PredictOptions, Request
+from .request import Instruction, Label, Request, Tournament
 from .response import Answer, Response, Usage
 
 __all__ = [
@@ -25,12 +25,12 @@ __all__ = [
     "Client",
     "Instruction",
     "Label",
-    "PredictOptions",
     "Request",
     "RequestError",
     "Response",
     "RuntimeExtraMissing",
     "ServerError",
+    "Tournament",
     "Usage",
     "Wazn",
     "WaznError",

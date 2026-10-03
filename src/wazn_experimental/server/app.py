@@ -22,7 +22,7 @@ from fastapi import FastAPI, HTTPException
 
 from .._version import __version__
 from ..errors import RequestError
-from ..request import PredictOptions, Request
+from ..request import Request
 from ..runtime.engine import free_memory
 from .schemas import PredictBody
 
@@ -35,9 +35,9 @@ log = logging.getLogger("wazn_experimental.server")
 @dataclass
 class Limits:
     """Refuse requests that would take the server down rather than answer.
-    `max_labels` counts labels across all instructions; past it, a
-    tournament (`group_size`) is the way to ask about a large label set, so
-    it is not applied to tournament requests."""
+    `max_labels` caps how many labels the model compares at once for one
+    instruction: all of them, or its tournament's `group_size`. A tournament
+    is the way to ask about a larger label set."""
 
     max_labels: int = 512
     max_instructions: int = 64
@@ -52,32 +52,33 @@ def create_app(wazn: "Wazn", limits: Limits | None = None) -> FastAPI:
     app = FastAPI(title="Wazn (experimental)", version=__version__,
                   docs_url=None, redoc_url=None, openapi_url=None)
 
-    def check(request: Request, options: PredictOptions) -> None:
+    def check(request: Request) -> None:
         if len(request.instructions) > limits.max_instructions:
             raise RequestError(
                 f"{len(request.instructions)} instructions; this server takes at most "
                 f"{limits.max_instructions} per request"
             )
-        if options.group_size is None and request.num_labels > limits.max_labels:
-            raise RequestError(
-                f"{request.num_labels} labels in one request; this server scores at most "
-                f"{limits.max_labels} at once. Split the request, or answer by tournament "
-                "(options.group_size)."
-            )
+        for ins in request.instructions:
+            if ins.compared_at_once > limits.max_labels:
+                raise RequestError(
+                    f"instruction {ins.name!r} compares {ins.compared_at_once} labels at once; "
+                    f"this server compares at most {limits.max_labels}. Answer it by tournament "
+                    '(add "tournament": {"group_size": ...} to the instruction).'
+                )
 
-    def run(request: Request, options: PredictOptions) -> dict[str, Any]:
-        check(request, options)
+    def run(request: Request, usage_detail: bool) -> dict[str, Any]:
+        check(request)
         with lock:
             counters["requests"] += 1
             try:
-                return wazn.predict_with(request, options).to_dict()
+                return wazn.predict(request, usage_detail=usage_detail).to_dict()
             except torch.OutOfMemoryError:
                 counters["errors"] += 1
                 free_memory()
                 raise HTTPException(
                     503,
                     "out of memory on this request; send fewer labels, shorter "
-                    "context, or answer by tournament (options.group_size)",
+                    "context, or answer large label sets by tournament",
                 ) from None
             except RequestError:
                 raise
@@ -94,10 +95,9 @@ def create_app(wazn: "Wazn", limits: Limits | None = None) -> FastAPI:
 
     @app.post("/predict")
     def predict(body: PredictBody) -> dict[str, Any]:
-        o = body.options
         try:
             request = Request.from_dict(body.request.model_dump(exclude_none=True))
-            return run(request, PredictOptions(o.group_size, o.top_k, o.seed, o.usage_detail))
+            return run(request, body.options.usage_detail)
         except RequestError as e:
             raise HTTPException(422, str(e)) from None
 

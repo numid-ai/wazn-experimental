@@ -39,10 +39,10 @@ def test_predict_sends_the_wire_format_and_parses_the_response():
         seen["body"] = json.loads(req.content)
         return httpx.Response(200, json=PAYLOAD)
 
-    response = mock_client(handler).predict(REQUEST, group_size=4, top_k=2, seed=0)
+    response = mock_client(handler).predict(REQUEST)
     assert seen["path"] == "/predict"
     assert seen["body"]["request"] == REQUEST.to_dict()
-    assert seen["body"]["options"] == {"group_size": 4, "top_k": 2, "seed": 0, "usage_detail": False}
+    assert seen["body"]["options"] == {"usage_detail": False}
     assert response.answer.choice == "returns"
     assert response["team"].none_probability == 0.1
     assert response.answer.correct is True
@@ -57,7 +57,9 @@ def test_requests_are_validated_before_sending():
     with pytest.raises(RequestError):
         client.predict({"state": "s", "questions": {}})
     with pytest.raises(RequestError):
-        client.predict(REQUEST, group_size=2, top_k=2)
+        client.predict({"state": "s", "questions": {"q": {
+            "instructions": "Q?", "criteria": ["a", "b"],
+            "tournament": {"group_size": 2, "top_k": 2}}}})
 
 
 def test_server_validation_errors_become_request_errors():
