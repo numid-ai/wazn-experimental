@@ -3,6 +3,8 @@ attention layers between full-attention layers), which is what the released
 checkpoints run on. The shared prefill + per-row continuation must match
 encoding each row on its own, at any chunk size."""
 
+import gc
+
 import pytest
 import torch
 
@@ -75,6 +77,27 @@ def test_out_of_memory_halves_the_chunk_and_retries(hybrid, monkeypatch):
     assert wazn.engine.oom_retries == 2
     for name in got.answers:
         assert got[name].probabilities == pytest.approx(expected[name].probabilities, abs=1e-5)
+
+
+def test_branched_caches_are_freed_with_the_request(hybrid):
+    """Without the cyclic gc: a branched cache that only gc can free holds
+    the expanded recurrent states (GBs on a real model) between requests."""
+    from transformers.cache_utils import CacheLayerMixin, LinearAttentionCacheLayerMixin
+
+    def cache_layers():
+        kinds = (CacheLayerMixin, LinearAttentionCacheLayerMixin)
+        return sum(1 for o in gc.get_objects() if isinstance(o, kinds))
+
+    wazn = Wazn.from_model(hybrid)
+    gc.collect()
+    gc.disable()
+    try:
+        before = cache_layers()
+        for _ in range(3):
+            wazn.predict(REQUEST)
+        assert cache_layers() == before
+    finally:
+        gc.enable()
 
 
 @pytest.mark.parametrize("request_", [REQUEST, SINGLE], ids=["two_instructions", "one"])

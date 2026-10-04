@@ -14,6 +14,7 @@ change: the head file is loaded by name.
 from __future__ import annotations
 
 import types
+import weakref
 
 import torch
 import torch.nn as nn
@@ -74,8 +75,12 @@ def _expand_hybrid_cache(cache, repeats: torch.Tensor):
                 if layer.is_recurrent_states_initialized[i]:
                     s = layer.recurrent_states[i]
                     layer.recurrent_states[i] = s.index_select(0, idx.to(s.device))
-            layer.update_conv_state = types.MethodType(_branch_conv_update, layer)
-            layer.update_recurrent_state = types.MethodType(_branch_recurrent_update, layer)
+            # bound to a weak proxy: a strong self-reference would make the
+            # layer a cycle, so its expanded states would outlive the request
+            # until the cyclic gc happened to run
+            proxy = weakref.proxy(layer)
+            layer.update_conv_state = types.MethodType(_branch_conv_update, proxy)
+            layer.update_recurrent_state = types.MethodType(_branch_recurrent_update, proxy)
             touched = True
         if getattr(layer, "keys", None) is not None and layer.keys.numel():
             layer.keys = layer.keys.index_select(0, idx.to(layer.keys.device))
