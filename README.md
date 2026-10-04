@@ -98,7 +98,7 @@ Or skip the server and load the model in process (e.g. in a notebook). `predict`
 ```python
 from wazn_experimental import Wazn
 
-model = Wazn.load()                      # numid/wazn-2b-v0.1; or a hub id / local directory
+model = Wazn.load()                      # numidlabs/wazn-2b-v0.1; or a hub id / local directory
 response = model.predict(request)
 ```
 
@@ -128,7 +128,7 @@ The files in [`examples/requests/`](examples/requests/) are ready to send:
 
 ```bash
 wazn-experimental predict examples/requests/aerospace_rules_k3.json              # to a running server
-wazn-experimental predict examples/requests/aerospace_rules_k3.json --model numid/wazn-2b-v0.1  # in process
+wazn-experimental predict examples/requests/aerospace_rules_k3.json --model numidlabs/wazn-2b-v0.1  # in process
 ```
 
 ## Reading responses
@@ -169,7 +169,7 @@ The labels are split into groups of `group_size`. The `top_k` of each group adva
 ## Server
 
 ```bash
-wazn-experimental serve [--model numid/wazn-2b-v0.1] [--host 127.0.0.1] [--port 8000] [--device auto] \
+wazn-experimental serve [--model numidlabs/wazn-2b-v0.1] [--host 127.0.0.1] [--port 8000] [--device auto] \
     [--dtype bfloat16] [--max-labels 512] [--max-instructions 64]
 ```
 
@@ -188,17 +188,17 @@ The server binds to localhost by default and has no authentication. Don't expose
 
 ## Checkpoints
 
-A checkpoint is a small directory: `config.json` plus `head.safetensors` (the judge, NONE gate, tag embeddings and LoRA adapters). The backbone's base weights are not part of it. They are fetched from the Hugging Face Hub at the commit `config.json` pins. `--model` takes a hub repo id or a local directory, and defaults to `numid/wazn-2b-v0.1`.
+A checkpoint is a small directory: `config.json` plus `head.safetensors` (the judge, NONE gate, tag embeddings and LoRA adapters). The backbone's base weights are not part of it. They are fetched from the Hugging Face Hub at the commit `config.json` pins. `--model` takes a hub repo id or a local directory, and defaults to `numidlabs/wazn-2b-v0.1`.
 
 | Model | Backbone | Hub |
 |---|---|---|
-| wazn-2b-v0.1 | Qwen3.5-2B-Base | `numid/wazn-2b-v0.1` |
+| wazn-2b-v0.1 | Qwen3.5-2B-Base | `numidlabs/wazn-2b-v0.1` |
 
 To publish a training run (maintainers):
 
 ```bash
-wazn-experimental export runs/<run> dist/wazn-2b-v0.1 --name wazn-2b-v0.1 --repo numid/wazn-2b-v0.1
-hf upload numid/wazn-2b-v0.1 dist/wazn-2b-v0.1
+wazn-experimental export runs/<run> dist/wazn-2b-v0.1 --name wazn-2b-v0.1 --repo numidlabs/wazn-2b-v0.1
+hf upload numidlabs/wazn-2b-v0.1 dist/wazn-2b-v0.1
 ```
 
 ## Development

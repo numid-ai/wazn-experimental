@@ -1,7 +1,7 @@
 """Turn a training run directory into a publishable checkpoint.
 
     wazn-experimental export runs/qwen_3.5_2b_V0.4 dist/wazn-2b-v0.1 \
-        --name wazn-2b-v0.1 --repo numid/wazn-2b-v0.1
+        --name wazn-2b-v0.1 --repo numidlabs/wazn-2b-v0.1
 
 reads the run's `config.json` and `head.pt` and writes
 
@@ -10,7 +10,7 @@ reads the run's `config.json` and `head.pt` and writes
     README.md          a model card to fill in before uploading
 
 Nothing is loaded onto a device and the backbone weights are not touched.
-Upload the result with `hf upload numid/wazn-2b-v0.1 dist/wazn-2b-v0.1`.
+Upload the result with `hf upload numidlabs/wazn-2b-v0.1 dist/wazn-2b-v0.1`.
 """
 
 from __future__ import annotations
