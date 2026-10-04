@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0b1.post1
+
+Documentation only; the code is 0.1.0b1's.
+
+- README: Hugging Face and blog links, and a speed table measured on an RTX 5090 (long context, a 219-label tournament, 10 instructions).
+- README corrections: tournaments encode labels once per request, `serve --dtype` defaults to `auto`, the validation rules, and which way context truncation goes.
+
 ## 0.1.0b1
 
 First beta: the GPU path (CUDA, bfloat16, fused linear-attention kernels) is the supported fast path.
