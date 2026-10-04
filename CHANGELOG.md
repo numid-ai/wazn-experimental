@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.1.0a1 (unreleased)
+## 0.1.0a2
+
+- Default model is now `numidlabs/wazn-2b-v0.1` (was `numid/wazn-2b-v0.1`, which does not exist).
+
+## 0.1.0a1
 
 First experimental release.
 
