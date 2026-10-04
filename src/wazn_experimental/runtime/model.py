@@ -251,8 +251,8 @@ class WaznModel(nn.Module):
 
         `c_flat[i]` is candidate `slot[i]` of set `set_idx[i]`. Sets of
         different sizes are padded and masked; the softmax covers real slots
-        only. -> (one probability vector per set, P(a valid candidate
-        exists) per set, or None without a gate)
+        only. Results stay on the device. -> (one probability vector per
+        set, P(a valid candidate exists) per set, or None without a gate)
         """
         k_max = int(slot.max()) + 1
         c = c_flat.new_zeros((n_sets, k_max, c_flat.size(-1)))
@@ -262,10 +262,10 @@ class WaznModel(nn.Module):
 
         c = self.choice_rep_norm(c.to(self.judge_dtype))
         parts = self.judge(c, mask)
-        p = torch.softmax(parts.scores.float(), dim=-1).cpu()
+        p = torch.softmax(parts.scores.float(), dim=-1)
         widths = mask.sum(dim=-1).tolist()
         probs = [p[i, : int(w)] for i, w in enumerate(widths)]
         gate = None
         if parts.gate_logit is not None:
-            gate = torch.sigmoid(parts.gate_logit.float()).cpu()
+            gate = torch.sigmoid(parts.gate_logit.float())
         return probs, gate

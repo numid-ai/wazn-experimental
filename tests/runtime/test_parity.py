@@ -82,6 +82,7 @@ def test_same_distributions_as_the_research_engine(pair, path):
     tournaments = {i.tournament for i in request.instructions if i.tournament is not None}
 
     payload = research_format(request)
+    is_tournament = bool(tournaments)
     if tournaments:
         # the research engine runs one tournament for every question, so only
         # requests whose questions share it can be compared
@@ -98,5 +99,10 @@ def test_same_distributions_as_the_research_engine(pair, path):
             assert ours[name].probabilities[label] == pytest.approx(p, abs=1e-5)
     # the research engine splits the same total into input + output tokens
     mine, ref = ours.usage.to_dict(detail=True), theirs.usage.to_dict(detail=True)
-    assert mine.pop("input_tokens") == ref.pop("input_tokens") + ref.pop("output_tokens")
+    ref_total = ref.pop("input_tokens") + ref.pop("output_tokens")
+    if is_tournament:
+        # it re-reads the context every round; we encode every label once
+        assert mine["input_tokens"] < ref_total
+        return
+    assert mine.pop("input_tokens") == ref_total
     assert mine == ref

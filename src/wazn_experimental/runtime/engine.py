@@ -26,7 +26,6 @@ import gc
 import random
 from typing import Sequence
 
-import numpy as np
 import torch
 
 from ..request import Instruction, Request
@@ -95,19 +94,28 @@ class WaznEngine:
         its `top_k` advance, and the survivors are regrouped until at most
         `group_size` remain, which are scored once more as the final group.
         A trailing group of at most `top_k` labels advances without a pass (a
-        bye). Each round scores every pending set of every instruction in one
-        pass, so the context is still read once per round.
+        bye). A label's representation does not depend on the set it is
+        judged in, so the backbone encodes every label once, up front, and
+        each round only runs the judge over the sets it needs. Results stay
+        on the device until the end.
         """
         ins = request.instructions
+        reps, usage, warnings = self._encode(request)
         alive = [list(i.label_names) for i in ins]
         for i, names in zip(ins, alive):
             if i.tournament is not None and i.tournament.seed is not None:
                 random.Random(i.tournament.seed).shuffle(names)
 
+        # every probability vector and gate the response reports, on the
+        # device; the rounds and finals below refer to them by index
+        held: list[torch.Tensor] = []
+
+        def hold(t: torch.Tensor) -> int:
+            held.append(t.reshape(-1))
+            return len(held) - 1
+
         rounds: list[list[dict]] = [[] for _ in ins]
-        final: list[tuple[dict[str, float], float | None] | None] = [None] * len(ins)
-        usage: Usage | None = None
-        warnings: list[str] = []
+        final: list[tuple[list[str], int, int | None] | None] = [None] * len(ins)
 
         while any(f is None for f in final):
             plan: list[tuple[int, list[str], bool]] = []
@@ -126,23 +134,20 @@ class WaznEngine:
                     else:
                         plan.append((j, group, False))
 
-            probs, gates, u, w = self._score(
-                request, [ins[j] for j, _, _ in plan], [group for _, group, _ in plan]
+            probs, gates = self._judge(
+                [[reps[ins[j].name, c] for c in group] for j, group, _ in plan]
             )
-            usage = u if usage is None else usage + u
-            warnings += [x for x in w if x not in warnings]
 
-            groups: list[list[dict[str, float]]] = [[] for _ in ins]
+            groups: list[list[tuple[list[str], int]]] = [[] for _ in ins]
             advanced: list[list[str]] = [[] for _ in ins]
             for (j, group, is_final), p, q in zip(plan, probs, gates):
-                dist = {c: float(p[k]) for k, c in enumerate(group)}
-                groups[j].append(dist)
+                groups[j].append((group, hold(p)))
                 if is_final:
-                    final[j] = (dist, q)
+                    final[j] = (group, groups[j][-1][1], None if q is None else hold(q))
                 else:
                     # keep the seeding order among survivors, so the next
                     # round's groups are not stacked by rank
-                    top = sorted(np.argsort(-p.numpy(), kind="stable")[: ins[j].tournament.top_k])
+                    top = sorted(torch.argsort(-p, stable=True)[: ins[j].tournament.top_k].tolist())
                     advanced[j].extend(group[k] for k in top)
 
             for j in range(len(ins)):
@@ -155,11 +160,21 @@ class WaznEngine:
                 if final[j] is None:
                     alive[j] = advanced[j] + byes[j]
 
+        host = [t.tolist() for t in torch.cat(held).cpu().split([t.numel() for t in held])]
+
+        def dist(names: list[str], h: int) -> dict[str, float]:
+            return dict(zip(names, host[h]))
+
         answers = {}
-        for i, (dist, q), trace in zip(ins, final, rounds):
+        for i, (names, h, q), trace in zip(ins, final, rounds):
             # only a tournament has rounds to report
-            trace = trace if i.tournament is not None else None
-            answers[i.name] = self._answer(i, dist, q, rounds=trace)
+            if i.tournament is None:
+                trace = None
+            else:
+                for entry in trace:
+                    entry["groups"] = [dist(*g) for g in entry["groups"]]
+            gate = None if q is None else host[q][0]
+            answers[i.name] = self._answer(i, dist(names, h), gate, rounds=trace)
         return Response(self.model_name, answers, usage, warnings=warnings,
                         usage_detail=usage_detail)
 
@@ -183,17 +198,14 @@ class WaznEngine:
 
     # -------------------------------------------------------------- scoring
 
-    def _score(
-        self,
-        request: Request,
-        instructions: Sequence[Instruction],
-        label_names: Sequence[Sequence[str]],
-    ):
-        """Score `label_names[j]` (all of instruction j's labels, or a
-        tournament group of them); each label brings its own examples.
-        -> (probabilities per set, gate per set, usage, warnings)."""
+    def _encode(self, request: Request):
+        """Run the backbone over every label of every instruction; each label
+        brings its own examples.
+        -> ({(instruction name, label name): representation on the device},
+            usage, warnings)."""
+        instructions = request.instructions
         state = render_state(rules=request.rules, context=request.context)
-        labels = [[i.label(n) for n in names] for i, names in zip(instructions, label_names)]
+        labels = [[i.label(n) for n in i.label_names] for i in instructions]
         texts = [[lab.text for lab in own] for own in labels]
         shots = [[lab.examples for lab in own] for own in labels]
         seg = self.encoder.encode(
@@ -212,11 +224,23 @@ class WaznEngine:
                 f"{self.model.config.backbone.dtype}; reload with dtype='bfloat16' "
                 "(or --dtype bfloat16)"
             )
-        idx = torch.tensor(seg.question_idx, dtype=torch.long, device=self.device)
-        slot = torch.tensor(seg.slot, dtype=torch.long, device=self.device)
-        probs, gate = self.model.judge_sets(c_flat, idx, slot, len(instructions))
-        gates = gate.tolist() if gate is not None else [None] * len(instructions)
-        return probs, gates, self._usage(seg), seg.warnings
+        reps = {
+            (instructions[j].name, instructions[j].label_names[k]): c
+            for j, k, c in zip(seg.question_idx, seg.slot, c_flat)
+        }
+        return reps, self._usage(seg), seg.warnings
+
+    def _judge(self, sets: Sequence[Sequence[torch.Tensor]]):
+        """Judge each set of label representations on its own.
+        -> (probabilities per set, gate per set or None), on the device."""
+        c_flat = torch.stack([c for own in sets for c in own])
+        idx = torch.tensor([s for s, own in enumerate(sets) for _ in own],
+                           dtype=torch.long, device=self.device)
+        slot = torch.tensor([k for own in sets for k in range(len(own))],
+                            dtype=torch.long, device=self.device)
+        probs, gate = self.model.judge_sets(c_flat, idx, slot, len(sets))
+        gates = list(gate) if gate is not None else [None] * len(sets)
+        return probs, gates
 
     # ---------------------------------------------------- shared-prefix path
 
