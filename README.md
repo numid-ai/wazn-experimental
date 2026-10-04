@@ -28,7 +28,7 @@ With [uv](https://docs.astral.sh/uv/): `uv pip install --pre "wazn-experimental[
 
 Notes:
 
-- **`--pre` is needed** while every release is an alpha (`0.1.0aN`); without it pip reports "no matching distribution". You can also pin a version, e.g. `wazn-experimental==0.1.0a1`.
+- **`--pre` is needed** while every release is a pre-release (`0.1.0aN`, `0.1.0bN`); without it pip reports "no matching distribution". You can also pin a version, e.g. `wazn-experimental==0.1.0b1`.
 - **Keep the quotes** around `"wazn-experimental[server]"`: zsh (the macOS default shell) treats the brackets as a glob pattern.
 - The `[server]` extra pulls in PyTorch, which is a large download (several GB on Linux with CUDA). The client-only install is a few small packages.
 - On macOS the `[cuda]` extra installs nothing; it is for Linux with an NVIDIA GPU.
