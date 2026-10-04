@@ -200,6 +200,23 @@ def test_tournament_never_compares_more_than_group_size(wazn):
     assert answer.choice in answer.probabilities
 
 
+def test_tournament_runs_the_backbone_once(wazn):
+    """Labels are encoded once, up front; the rounds only rerun the judge."""
+    labels = [f"option {i}" for i in range(23)]
+    calls = []
+    hook = wazn.engine.model.backbone.register_forward_hook(lambda *_: calls.append(1))
+    try:
+        plain = wazn.predict(Request("ctx", [Instruction("Pick one", labels, name="q")]))
+        n_plain = len(calls)
+        t = wazn.predict(Request("ctx", [Instruction("Pick one", labels, name="q",
+                                                     tournament=Tournament(5, top_k=2))]))
+    finally:
+        hook.remove()
+    assert len(t["q"].rounds) >= 3
+    assert len(calls) - n_plain == n_plain
+    assert t.usage == plain.usage
+
+
 def test_tournament_survivors_are_each_groups_top_k(wazn):
     labels = [f"option {i}" for i in range(12)]
     answer = wazn.predict(Request("ctx", [Instruction("Pick one", labels, name="q",

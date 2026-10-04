@@ -3,6 +3,8 @@ attention layers between full-attention layers), which is what the released
 checkpoints run on. The shared prefill + per-row continuation must match
 encoding each row on its own, at any chunk size."""
 
+import gc
+
 import pytest
 import torch
 
@@ -43,10 +45,14 @@ def hybrid(tokenizer):
     return model
 
 
+SINGLE = Request(REQUEST.context, [REQUEST["severity"]], rules=REQUEST.rules)
+
+
+@pytest.mark.parametrize("request_", [REQUEST, SINGLE], ids=["two_instructions", "one"])
 @pytest.mark.parametrize("chunk", [None, 1, 3])
-def test_recurrent_shared_path_matches_flat(hybrid, chunk):
-    shared = Wazn.from_model(hybrid, candidate_chunk=chunk).predict(REQUEST)
-    flat = Wazn.from_model(hybrid, share_state=False).predict(REQUEST)
+def test_recurrent_shared_path_matches_flat(hybrid, chunk, request_):
+    shared = Wazn.from_model(hybrid, candidate_chunk=chunk).predict(request_)
+    flat = Wazn.from_model(hybrid, share_state=False).predict(request_)
     for name in shared.answers:
         for label, p in shared[name].probabilities.items():
             assert p == pytest.approx(flat[name].probabilities[label], abs=1e-4)
@@ -59,11 +65,11 @@ def test_out_of_memory_halves_the_chunk_and_retries(hybrid, monkeypatch):
     real = wazn.engine._branch_rows
     seen = []
 
-    def flaky(seg, rows, chunk):
+    def flaky(seg, chunk):
         seen.append(chunk)
         if chunk > 2:
             raise torch.OutOfMemoryError("simulated")
-        return real(seg, rows, chunk)
+        return real(seg, chunk)
 
     monkeypatch.setattr(wazn.engine, "_branch_rows", flaky)
     got = wazn.predict(REQUEST)
@@ -71,3 +77,52 @@ def test_out_of_memory_halves_the_chunk_and_retries(hybrid, monkeypatch):
     assert wazn.engine.oom_retries == 2
     for name in got.answers:
         assert got[name].probabilities == pytest.approx(expected[name].probabilities, abs=1e-5)
+
+
+def test_branched_caches_are_freed_with_the_request(hybrid):
+    """Without the cyclic gc: a branched cache that only gc can free holds
+    the expanded recurrent states (GBs on a real model) between requests."""
+    from transformers.cache_utils import CacheLayerMixin, LinearAttentionCacheLayerMixin
+
+    def cache_layers():
+        kinds = (CacheLayerMixin, LinearAttentionCacheLayerMixin)
+        return sum(1 for o in gc.get_objects() if isinstance(o, kinds))
+
+    wazn = Wazn.from_model(hybrid)
+    gc.collect()
+    gc.disable()
+    try:
+        before = cache_layers()
+        for _ in range(3):
+            wazn.predict(REQUEST)
+        assert cache_layers() == before
+    finally:
+        gc.enable()
+
+
+@pytest.mark.parametrize("request_", [REQUEST, SINGLE], ids=["two_instructions", "one"])
+def test_rows_carry_only_their_label(hybrid, request_):
+    """The instruction is read once, in the prefix, not once per label."""
+    wazn = Wazn.from_model(hybrid)
+    engine, segs, computed = wazn.engine, [], []
+    real = engine._branch_rows
+
+    def capture(seg, chunk):
+        segs.append(seg)
+        return real(seg, chunk)
+
+    engine._branch_rows = capture
+    hook = hybrid.backbone.register_forward_pre_hook(
+        lambda _, args, kw: computed.append(kw["inputs_embeds"].shape[:2].numel()),
+        with_kwargs=True)
+    try:
+        wazn.predict(request_)
+    finally:
+        hook.remove()
+    (seg,) = segs
+    expected = 0 if len(seg.questions) == 1 else len(seg.state)
+    for j, q in enumerate(seg.questions):
+        labels = [len(c) for c, i in zip(seg.candidates, seg.question_idx) if i == j]
+        expected += (len(seg.state) if len(seg.questions) == 1 else 0) + len(q)
+        expected += len(labels) * max(labels)
+    assert sum(computed) == expected

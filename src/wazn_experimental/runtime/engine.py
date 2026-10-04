@@ -26,7 +26,6 @@ import gc
 import random
 from typing import Sequence
 
-import numpy as np
 import torch
 
 from ..request import Instruction, Request
@@ -95,19 +94,28 @@ class WaznEngine:
         its `top_k` advance, and the survivors are regrouped until at most
         `group_size` remain, which are scored once more as the final group.
         A trailing group of at most `top_k` labels advances without a pass (a
-        bye). Each round scores every pending set of every instruction in one
-        pass, so the context is still read once per round.
+        bye). A label's representation does not depend on the set it is
+        judged in, so the backbone encodes every label once, up front, and
+        each round only runs the judge over the sets it needs. Results stay
+        on the device until the end.
         """
         ins = request.instructions
+        reps, usage, warnings = self._encode(request)
         alive = [list(i.label_names) for i in ins]
         for i, names in zip(ins, alive):
             if i.tournament is not None and i.tournament.seed is not None:
                 random.Random(i.tournament.seed).shuffle(names)
 
+        # every probability vector and gate the response reports, on the
+        # device; the rounds and finals below refer to them by index
+        held: list[torch.Tensor] = []
+
+        def hold(t: torch.Tensor) -> int:
+            held.append(t.reshape(-1))
+            return len(held) - 1
+
         rounds: list[list[dict]] = [[] for _ in ins]
-        final: list[tuple[dict[str, float], float | None] | None] = [None] * len(ins)
-        usage: Usage | None = None
-        warnings: list[str] = []
+        final: list[tuple[list[str], int, int | None] | None] = [None] * len(ins)
 
         while any(f is None for f in final):
             plan: list[tuple[int, list[str], bool]] = []
@@ -126,23 +134,20 @@ class WaznEngine:
                     else:
                         plan.append((j, group, False))
 
-            probs, gates, u, w = self._score(
-                request, [ins[j] for j, _, _ in plan], [group for _, group, _ in plan]
+            probs, gates = self._judge(
+                [[reps[ins[j].name, c] for c in group] for j, group, _ in plan]
             )
-            usage = u if usage is None else usage + u
-            warnings += [x for x in w if x not in warnings]
 
-            groups: list[list[dict[str, float]]] = [[] for _ in ins]
+            groups: list[list[tuple[list[str], int]]] = [[] for _ in ins]
             advanced: list[list[str]] = [[] for _ in ins]
             for (j, group, is_final), p, q in zip(plan, probs, gates):
-                dist = {c: float(p[k]) for k, c in enumerate(group)}
-                groups[j].append(dist)
+                groups[j].append((group, hold(p)))
                 if is_final:
-                    final[j] = (dist, q)
+                    final[j] = (group, groups[j][-1][1], None if q is None else hold(q))
                 else:
                     # keep the seeding order among survivors, so the next
                     # round's groups are not stacked by rank
-                    top = sorted(np.argsort(-p.numpy(), kind="stable")[: ins[j].tournament.top_k])
+                    top = sorted(torch.argsort(-p, stable=True)[: ins[j].tournament.top_k].tolist())
                     advanced[j].extend(group[k] for k in top)
 
             for j in range(len(ins)):
@@ -155,11 +160,21 @@ class WaznEngine:
                 if final[j] is None:
                     alive[j] = advanced[j] + byes[j]
 
+        host = [t.tolist() for t in torch.cat(held).cpu().split([t.numel() for t in held])]
+
+        def dist(names: list[str], h: int) -> dict[str, float]:
+            return dict(zip(names, host[h]))
+
         answers = {}
-        for i, (dist, q), trace in zip(ins, final, rounds):
+        for i, (names, h, q), trace in zip(ins, final, rounds):
             # only a tournament has rounds to report
-            trace = trace if i.tournament is not None else None
-            answers[i.name] = self._answer(i, dist, q, rounds=trace)
+            if i.tournament is None:
+                trace = None
+            else:
+                for entry in trace:
+                    entry["groups"] = [dist(*g) for g in entry["groups"]]
+            gate = None if q is None else host[q][0]
+            answers[i.name] = self._answer(i, dist(names, h), gate, rounds=trace)
         return Response(self.model_name, answers, usage, warnings=warnings,
                         usage_detail=usage_detail)
 
@@ -183,17 +198,14 @@ class WaznEngine:
 
     # -------------------------------------------------------------- scoring
 
-    def _score(
-        self,
-        request: Request,
-        instructions: Sequence[Instruction],
-        label_names: Sequence[Sequence[str]],
-    ):
-        """Score `label_names[j]` (all of instruction j's labels, or a
-        tournament group of them); each label brings its own examples.
-        -> (probabilities per set, gate per set, usage, warnings)."""
+    def _encode(self, request: Request):
+        """Run the backbone over every label of every instruction; each label
+        brings its own examples.
+        -> ({(instruction name, label name): representation on the device},
+            usage, warnings)."""
+        instructions = request.instructions
         state = render_state(rules=request.rules, context=request.context)
-        labels = [[i.label(n) for n in names] for i, names in zip(instructions, label_names)]
+        labels = [[i.label(n) for n in i.label_names] for i in instructions]
         texts = [[lab.text for lab in own] for own in labels]
         shots = [[lab.examples for lab in own] for own in labels]
         seg = self.encoder.encode(
@@ -212,26 +224,42 @@ class WaznEngine:
                 f"{self.model.config.backbone.dtype}; reload with dtype='bfloat16' "
                 "(or --dtype bfloat16)"
             )
-        idx = torch.tensor(seg.question_idx, dtype=torch.long, device=self.device)
-        slot = torch.tensor(seg.slot, dtype=torch.long, device=self.device)
-        probs, gate = self.model.judge_sets(c_flat, idx, slot, len(instructions))
-        gates = gate.tolist() if gate is not None else [None] * len(instructions)
-        return probs, gates, self._usage(seg), seg.warnings
+        reps = {
+            (instructions[j].name, instructions[j].label_names[k]): c
+            for j, k, c in zip(seg.question_idx, seg.slot, c_flat)
+        }
+        return reps, self._usage(seg), seg.warnings
+
+    def _judge(self, sets: Sequence[Sequence[torch.Tensor]]):
+        """Judge each set of label representations on its own.
+        -> (probabilities per set, gate per set or None), on the device."""
+        c_flat = torch.stack([c for own in sets for c in own])
+        idx = torch.tensor([s for s, own in enumerate(sets) for _ in own],
+                           dtype=torch.long, device=self.device)
+        slot = torch.tensor([k for own in sets for k in range(len(own))],
+                            dtype=torch.long, device=self.device)
+        probs, gate = self.model.judge_sets(c_flat, idx, slot, len(sets))
+        gates = list(gate) if gate is not None else [None] * len(sets)
+        return probs, gates
 
     # ---------------------------------------------------- shared-prefix path
 
     @torch.no_grad()
-    def _prefill(self, seg: Segments):
+    def _prefill(self, ids: list[int], cache=None, start: int = 0):
+        """Run `ids` as one sequence at positions `start..`, continuing
+        `cache` if given (a normal, unbranched update). -> cache"""
         model, device = self.model, self.device
-        prefix = torch.tensor([seg.state], dtype=torch.long, device=device)
-        mask = torch.ones_like(prefix)
+        prefix = torch.tensor([ids], dtype=torch.long, device=device)
+        positions = torch.arange(start, start + len(ids), device=device)
         out = model.backbone(
             inputs_embeds=model.embed_ids(prefix),
-            attention_mask=mask,
-            position_ids=torch.arange(prefix.size(1), device=device).unsqueeze(0),
+            attention_mask=torch.ones((1, start + len(ids)), dtype=torch.long, device=device),
+            position_ids=positions.unsqueeze(0),
+            past_key_values=cache,
+            cache_position=positions if cache is not None else None,
             use_cache=True,
         )
-        return out.past_key_values, mask
+        return out.past_key_values
 
     @torch.no_grad()
     def _encode_shared(self, seg: Segments) -> torch.Tensor:
@@ -239,7 +267,8 @@ class WaznEngine:
         j, n, lp = len(seg.questions), len(seg.candidates), len(seg.state)
 
         # 1. [S], one prefill
-        cache, prefix_mask = self._prefill(seg)
+        cache = self._prefill(seg.state)
+        prefix_mask = torch.ones((1, lp), dtype=torch.long, device=device)
 
         # 2. Q_1..Q_J branch off it, one batched pass
         q_ids, q_mask = _pad_to(seg.questions, self.encoder.pad_id, device)
@@ -275,15 +304,17 @@ class WaznEngine:
 
     @torch.no_grad()
     def _encode_shared_recurrent(self, seg: Segments) -> torch.Tensor:
-        """The state is prefilled once; each row continues with its own
-        instruction and label, `chunk` rows per pass. On out-of-memory the
-        chunk is halved and the request retried from the prefill (a branched
-        hybrid cache is consumed in place, so it cannot be reused)."""
-        rows = [seg.questions[q] + c for q, c in zip(seg.question_idx, seg.candidates)]
-        chunk = self.candidate_chunk or len(rows)
+        """Each instruction is folded into the prefix, so a row is only its
+        label: one instruction prefills `[S, Q]` in one pass; several prefill
+        `[S]` once and extend a copy of it with each `Q_j`. Every row then
+        continues from its instruction's cache, `chunk` rows per pass. On
+        out-of-memory the chunk is halved and the request retried from the
+        prefill (a branched hybrid cache is consumed in place, so it cannot
+        be reused)."""
+        chunk = self.candidate_chunk or len(seg.candidates)
         while True:
             try:
-                return self._branch_rows(seg, rows, chunk)
+                return self._branch_rows(seg, chunk)
             except torch.OutOfMemoryError:
                 free_memory()
                 if chunk == 1:
@@ -291,29 +322,49 @@ class WaznEngine:
                 chunk = max(1, chunk // 2)
                 self.oom_retries += 1
 
-    def _branch_rows(self, seg: Segments, rows: list[list[int]], chunk: int) -> torch.Tensor:
+    def _branch_rows(self, seg: Segments, chunk: int) -> torch.Tensor:
+        lp, n_q = len(seg.state), len(seg.questions)
+        rows_of = [[r for r, q in enumerate(seg.question_idx) if q == j] for j in range(n_q)]
+        reps = [None] * len(seg.candidates)
+        state_cache = self._prefill(seg.state) if n_q > 1 else None
+        for j, question in enumerate(seg.questions):
+            if not rows_of[j]:
+                continue
+            if state_cache is None:
+                cache = self._prefill(seg.state + question)
+            else:
+                # the last instruction may consume the state cache itself
+                base = state_cache if j == n_q - 1 else copy.deepcopy(state_cache)
+                cache = self._prefill(question, cache=base, start=lp)
+            for row, rep in zip(rows_of[j], self._branch_labels(seg, cache, lp + len(question),
+                                                                rows_of[j], chunk)):
+                reps[row] = rep
+        return torch.stack(reps)
+
+    def _branch_labels(
+        self, seg: Segments, prefix_cache, lp: int, rows: list[int], chunk: int
+    ) -> list[torch.Tensor]:
+        """Continue `prefix_cache` (length `lp`) with each of `rows`' labels."""
         model, device = self.model, self.device
-        lp, n = len(seg.state), len(rows)
-        prefix_cache, prefix_mask = self._prefill(seg)
-        reps = []
+        n, reps = len(rows), []
         for lo in range(0, n, chunk):
-            part = rows[lo : lo + chunk]
+            part = [seg.candidates[r] for r in rows[lo : lo + chunk]]
             m = len(part)
             cache = prefix_cache if lo + chunk >= n else copy.deepcopy(prefix_cache)
             cache = expand_cache(cache, torch.tensor([m], device=device))
             ids, mask = _pad_to(part, self.encoder.pad_id, device)
             out = model.backbone(
                 inputs_embeds=model.embed_ids(ids),
-                attention_mask=torch.cat([prefix_mask.expand(m, lp), mask], dim=1),
+                attention_mask=torch.cat([mask.new_ones((m, lp)), mask], dim=1),
                 position_ids=lp + _positions_from_mask(mask),
                 past_key_values=cache,
                 cache_position=torch.arange(lp, lp + ids.size(1), device=device),
                 use_cache=False,
             )
             rep_pos = torch.tensor([len(r) - 1 for r in part], device=device)
-            reps.append(out.last_hidden_state[torch.arange(m, device=device), rep_pos])
+            reps += out.last_hidden_state[torch.arange(m, device=device), rep_pos].unbind()
             del out, cache
-        return torch.cat(reps)
+        return reps
 
     # ------------------------------------------------------- reference path
 
