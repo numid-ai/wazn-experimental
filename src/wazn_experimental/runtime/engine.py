@@ -245,17 +245,21 @@ class WaznEngine:
     # ---------------------------------------------------- shared-prefix path
 
     @torch.no_grad()
-    def _prefill(self, seg: Segments):
+    def _prefill(self, ids: list[int], cache=None, start: int = 0):
+        """Run `ids` as one sequence at positions `start..`, continuing
+        `cache` if given (a normal, unbranched update). -> cache"""
         model, device = self.model, self.device
-        prefix = torch.tensor([seg.state], dtype=torch.long, device=device)
-        mask = torch.ones_like(prefix)
+        prefix = torch.tensor([ids], dtype=torch.long, device=device)
+        positions = torch.arange(start, start + len(ids), device=device)
         out = model.backbone(
             inputs_embeds=model.embed_ids(prefix),
-            attention_mask=mask,
-            position_ids=torch.arange(prefix.size(1), device=device).unsqueeze(0),
+            attention_mask=torch.ones((1, start + len(ids)), dtype=torch.long, device=device),
+            position_ids=positions.unsqueeze(0),
+            past_key_values=cache,
+            cache_position=positions if cache is not None else None,
             use_cache=True,
         )
-        return out.past_key_values, mask
+        return out.past_key_values
 
     @torch.no_grad()
     def _encode_shared(self, seg: Segments) -> torch.Tensor:
@@ -263,7 +267,8 @@ class WaznEngine:
         j, n, lp = len(seg.questions), len(seg.candidates), len(seg.state)
 
         # 1. [S], one prefill
-        cache, prefix_mask = self._prefill(seg)
+        cache = self._prefill(seg.state)
+        prefix_mask = torch.ones((1, lp), dtype=torch.long, device=device)
 
         # 2. Q_1..Q_J branch off it, one batched pass
         q_ids, q_mask = _pad_to(seg.questions, self.encoder.pad_id, device)
@@ -299,15 +304,17 @@ class WaznEngine:
 
     @torch.no_grad()
     def _encode_shared_recurrent(self, seg: Segments) -> torch.Tensor:
-        """The state is prefilled once; each row continues with its own
-        instruction and label, `chunk` rows per pass. On out-of-memory the
-        chunk is halved and the request retried from the prefill (a branched
-        hybrid cache is consumed in place, so it cannot be reused)."""
-        rows = [seg.questions[q] + c for q, c in zip(seg.question_idx, seg.candidates)]
-        chunk = self.candidate_chunk or len(rows)
+        """Each instruction is folded into the prefix, so a row is only its
+        label: one instruction prefills `[S, Q]` in one pass; several prefill
+        `[S]` once and extend a copy of it with each `Q_j`. Every row then
+        continues from its instruction's cache, `chunk` rows per pass. On
+        out-of-memory the chunk is halved and the request retried from the
+        prefill (a branched hybrid cache is consumed in place, so it cannot
+        be reused)."""
+        chunk = self.candidate_chunk or len(seg.candidates)
         while True:
             try:
-                return self._branch_rows(seg, rows, chunk)
+                return self._branch_rows(seg, chunk)
             except torch.OutOfMemoryError:
                 free_memory()
                 if chunk == 1:
@@ -315,29 +322,49 @@ class WaznEngine:
                 chunk = max(1, chunk // 2)
                 self.oom_retries += 1
 
-    def _branch_rows(self, seg: Segments, rows: list[list[int]], chunk: int) -> torch.Tensor:
+    def _branch_rows(self, seg: Segments, chunk: int) -> torch.Tensor:
+        lp, n_q = len(seg.state), len(seg.questions)
+        rows_of = [[r for r, q in enumerate(seg.question_idx) if q == j] for j in range(n_q)]
+        reps = [None] * len(seg.candidates)
+        state_cache = self._prefill(seg.state) if n_q > 1 else None
+        for j, question in enumerate(seg.questions):
+            if not rows_of[j]:
+                continue
+            if state_cache is None:
+                cache = self._prefill(seg.state + question)
+            else:
+                # the last instruction may consume the state cache itself
+                base = state_cache if j == n_q - 1 else copy.deepcopy(state_cache)
+                cache = self._prefill(question, cache=base, start=lp)
+            for row, rep in zip(rows_of[j], self._branch_labels(seg, cache, lp + len(question),
+                                                                rows_of[j], chunk)):
+                reps[row] = rep
+        return torch.stack(reps)
+
+    def _branch_labels(
+        self, seg: Segments, prefix_cache, lp: int, rows: list[int], chunk: int
+    ) -> list[torch.Tensor]:
+        """Continue `prefix_cache` (length `lp`) with each of `rows`' labels."""
         model, device = self.model, self.device
-        lp, n = len(seg.state), len(rows)
-        prefix_cache, prefix_mask = self._prefill(seg)
-        reps = []
+        n, reps = len(rows), []
         for lo in range(0, n, chunk):
-            part = rows[lo : lo + chunk]
+            part = [seg.candidates[r] for r in rows[lo : lo + chunk]]
             m = len(part)
             cache = prefix_cache if lo + chunk >= n else copy.deepcopy(prefix_cache)
             cache = expand_cache(cache, torch.tensor([m], device=device))
             ids, mask = _pad_to(part, self.encoder.pad_id, device)
             out = model.backbone(
                 inputs_embeds=model.embed_ids(ids),
-                attention_mask=torch.cat([prefix_mask.expand(m, lp), mask], dim=1),
+                attention_mask=torch.cat([mask.new_ones((m, lp)), mask], dim=1),
                 position_ids=lp + _positions_from_mask(mask),
                 past_key_values=cache,
                 cache_position=torch.arange(lp, lp + ids.size(1), device=device),
                 use_cache=False,
             )
             rep_pos = torch.tensor([len(r) - 1 for r in part], device=device)
-            reps.append(out.last_hidden_state[torch.arange(m, device=device), rep_pos])
+            reps += out.last_hidden_state[torch.arange(m, device=device), rep_pos].unbind()
             del out, cache
-        return torch.cat(reps)
+        return reps
 
     # ------------------------------------------------------- reference path
 
