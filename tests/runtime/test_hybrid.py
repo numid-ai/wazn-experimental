@@ -101,8 +101,10 @@ def test_branched_caches_are_freed_with_the_request(hybrid):
 
 
 @pytest.mark.parametrize("request_", [REQUEST, SINGLE], ids=["two_instructions", "one"])
-def test_rows_carry_only_their_label(hybrid, request_):
-    """The instruction is read once, in the prefix, not once per label."""
+def test_two_backbone_passes_whatever_the_instructions(hybrid, request_):
+    """One instruction is folded into the prefix, so its rows are only
+    labels; several share the state's prefix and each row carries its
+    instruction. Either way: one prefill, one branch pass."""
     wazn = Wazn.from_model(hybrid)
     engine, segs, computed = wazn.engine, [], []
     real = engine._branch_rows
@@ -120,9 +122,9 @@ def test_rows_carry_only_their_label(hybrid, request_):
     finally:
         hook.remove()
     (seg,) = segs
-    expected = 0 if len(seg.questions) == 1 else len(seg.state)
-    for j, q in enumerate(seg.questions):
-        labels = [len(c) for c, i in zip(seg.candidates, seg.question_idx) if i == j]
-        expected += (len(seg.state) if len(seg.questions) == 1 else 0) + len(q)
-        expected += len(labels) * max(labels)
-    assert sum(computed) == expected
+    if len(seg.questions) == 1:
+        prefix, rows = seg.state + seg.questions[0], seg.candidates
+    else:
+        prefix = seg.state
+        rows = [seg.questions[q] + c for q, c in zip(seg.question_idx, seg.candidates)]
+    assert computed == [len(prefix), len(rows) * max(len(r) for r in rows)]

@@ -245,18 +245,14 @@ class WaznEngine:
     # ---------------------------------------------------- shared-prefix path
 
     @torch.no_grad()
-    def _prefill(self, ids: list[int], cache=None, start: int = 0):
-        """Run `ids` as one sequence at positions `start..`, continuing
-        `cache` if given (a normal, unbranched update). -> cache"""
+    def _prefill(self, ids: list[int]):
+        """Run `ids` as one sequence from position 0. -> cache"""
         model, device = self.model, self.device
         prefix = torch.tensor([ids], dtype=torch.long, device=device)
-        positions = torch.arange(start, start + len(ids), device=device)
         out = model.backbone(
             inputs_embeds=model.embed_ids(prefix),
-            attention_mask=torch.ones((1, start + len(ids)), dtype=torch.long, device=device),
-            position_ids=positions.unsqueeze(0),
-            past_key_values=cache,
-            cache_position=positions if cache is not None else None,
+            attention_mask=torch.ones_like(prefix),
+            position_ids=torch.arange(prefix.size(1), device=device).unsqueeze(0),
             use_cache=True,
         )
         return out.past_key_values
@@ -304,13 +300,13 @@ class WaznEngine:
 
     @torch.no_grad()
     def _encode_shared_recurrent(self, seg: Segments) -> torch.Tensor:
-        """Each instruction is folded into the prefix, so a row is only its
-        label: one instruction prefills `[S, Q]` in one pass; several prefill
-        `[S]` once and extend a copy of it with each `Q_j`. Every row then
-        continues from its instruction's cache, `chunk` rows per pass. On
-        out-of-memory the chunk is halved and the request retried from the
-        prefill (a branched hybrid cache is consumed in place, so it cannot
-        be reused)."""
+        """One instruction is folded into the prefix: `[S, Q]` is prefilled
+        and each row is only its label. Several instructions prefill `[S]`
+        and each row is `[Q_j, c]`: a loop over instructions would cost two
+        sequential passes per instruction, which outweighs repeating `Q_j`
+        in its rows. Rows go `chunk` per pass. On out-of-memory the chunk is
+        halved and the request retried from the prefill (a branched hybrid
+        cache is consumed in place, so it cannot be reused)."""
         chunk = self.candidate_chunk or len(seg.candidates)
         while True:
             try:
@@ -323,32 +319,20 @@ class WaznEngine:
                 self.oom_retries += 1
 
     def _branch_rows(self, seg: Segments, chunk: int) -> torch.Tensor:
-        lp, n_q = len(seg.state), len(seg.questions)
-        rows_of = [[r for r, q in enumerate(seg.question_idx) if q == j] for j in range(n_q)]
-        reps = [None] * len(seg.candidates)
-        state_cache = self._prefill(seg.state) if n_q > 1 else None
-        for j, question in enumerate(seg.questions):
-            if not rows_of[j]:
-                continue
-            if state_cache is None:
-                cache = self._prefill(seg.state + question)
-            else:
-                # the last instruction may consume the state cache itself
-                base = state_cache if j == n_q - 1 else copy.deepcopy(state_cache)
-                cache = self._prefill(question, cache=base, start=lp)
-            for row, rep in zip(rows_of[j], self._branch_labels(seg, cache, lp + len(question),
-                                                                rows_of[j], chunk)):
-                reps[row] = rep
-        return torch.stack(reps)
+        if len(seg.questions) == 1:
+            prefix = seg.state + seg.questions[0]
+            rows = seg.candidates
+        else:
+            prefix = seg.state
+            rows = [seg.questions[q] + c for q, c in zip(seg.question_idx, seg.candidates)]
+        return self._branch(self._prefill(prefix), len(prefix), rows, chunk)
 
-    def _branch_labels(
-        self, seg: Segments, prefix_cache, lp: int, rows: list[int], chunk: int
-    ) -> list[torch.Tensor]:
-        """Continue `prefix_cache` (length `lp`) with each of `rows`' labels."""
+    def _branch(self, prefix_cache, lp: int, rows: list[list[int]], chunk: int) -> torch.Tensor:
+        """Continue `prefix_cache` (length `lp`) with each row."""
         model, device = self.model, self.device
         n, reps = len(rows), []
         for lo in range(0, n, chunk):
-            part = [seg.candidates[r] for r in rows[lo : lo + chunk]]
+            part = rows[lo : lo + chunk]
             m = len(part)
             cache = prefix_cache if lo + chunk >= n else copy.deepcopy(prefix_cache)
             cache = expand_cache(cache, torch.tensor([m], device=device))
@@ -362,9 +346,9 @@ class WaznEngine:
                 use_cache=False,
             )
             rep_pos = torch.tensor([len(r) - 1 for r in part], device=device)
-            reps += out.last_hidden_state[torch.arange(m, device=device), rep_pos].unbind()
+            reps.append(out.last_hidden_state[torch.arange(m, device=device), rep_pos])
             del out, cache
-        return reps
+        return torch.cat(reps)
 
     # ------------------------------------------------------- reference path
 
