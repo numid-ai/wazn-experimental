@@ -14,13 +14,13 @@ The label set is yours, per request, with no retraining: two labels or a thousan
 
 | Config | Instructions × labels | Input tokens (context / instructions / labels) | Median | p90 |
 |---|---|---|---|---|
-| Normal context, few labels | 1 × 5 | 105 (60 / 13 / 32) | **36 ms** | 39 ms |
-| Short query, banking77 intents (snake_case names)¹ | 1 × 77 (tournament, groups of 10, top 2) | ~492 (~17 / 12 / 463) | **49 ms** | 50 ms |
-| Normal context, many labels, all at once | 1 × 219 | 1,052 (60 / 13 / 979) | **124 ms** | 125 ms |
-| Normal context, many labels | 1 × 219 (tournament, groups of 10, top 2) | 1,052 (60 / 13 / 979) | **89 ms** | 90 ms |
-| Normal context, very many labels (random names) | 1 × 1,000 (tournament, groups of 10, top 2) | 5,483 (60 / 13 / 5,410) | **333 ms** | 336 ms |
-| Long context (NDA, ContractNLI) | 1 × 10 | 6,485 (6,317 / 14 / 154) | **171 ms** | 172 ms |
-| Normal context, many instructions (incident report) | 10 × 4 | 1,621 (648 / 189 / 784) | **163 ms** | 163 ms |
+| Normal context, few labels | 1 × 5 | 105 (60 / 13 / 32) | **35 ms** | 37 ms |
+| Short query, banking77 intents (snake_case names)¹ | 1 × 77 (tournament, groups of 10, top 2) | ~492 (~17 / 12 / 463) | **48 ms** | 50 ms |
+| Normal context, many labels, all at once | 1 × 219 | 1,052 (60 / 13 / 979) | **121 ms** | 122 ms |
+| Normal context, many labels | 1 × 219 (tournament, groups of 10, top 2) | 1,052 (60 / 13 / 979) | **86 ms** | 87 ms |
+| Normal context, very many labels (random names) | 1 × 1,000 (tournament, groups of 10, top 2) | 5,483 (60 / 13 / 5,410) | **317 ms** | 319 ms |
+| Long context (NDA, ContractNLI) | 1 × 10 | 6,485 (6,317 / 14 / 154) | **152 ms** | 153 ms |
+| Normal context, many instructions (incident report) | 10 × 4 | 1,621 (648 / 189 / 784) | **154 ms** | 156 ms |
 
 `numidlabs/wazn-2b-v0.1` on an NVIDIA RTX 5090, bfloat16, `[server,cuda]`. Server-side time over 10 requests sent one after another, after a warm-up request; no input was truncated. The first request after a start is slower, because it compiles the GPU kernels.
 
