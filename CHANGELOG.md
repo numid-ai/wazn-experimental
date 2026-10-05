@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0b2
+
+- Several instructions in one request no longer cost two backbone passes each on recurrent backbones: the state is prefilled once and every label row carries its instruction, so any request is one prefill and one branch pass. 10 instructions of 4 labels: 433 to 154 ms on an RTX 5090.
+- On CUDA, the backbone's short convolution runs on fla's Triton kernel when the `causal-conv1d` package is not installed (it needs a CUDA toolkit matching torch's to build). transformers no longer falls back to its PyTorch version or warns about it; requests are 3 to 11% faster, most on long contexts.
+- README: speed table measured on an RTX 5090 (few and many labels, tournament and all at once, a long context, many instructions).
+
 ## 0.1.0b1.post1
 
 Documentation only; the code is 0.1.0b1's.

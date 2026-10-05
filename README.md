@@ -46,7 +46,7 @@ With [uv](https://docs.astral.sh/uv/): `uv pip install --pre "wazn-experimental[
 
 Notes:
 
-- **`--pre` is needed** while every release is a pre-release (`0.1.0aN`, `0.1.0bN`); without it pip reports "no matching distribution". You can also pin a version, e.g. `wazn-experimental==0.1.0b1`.
+- **`--pre` is needed** while every release is a pre-release (`0.1.0aN`, `0.1.0bN`); without it pip reports "no matching distribution". You can also pin a version, e.g. `wazn-experimental==0.1.0b2`.
 - The `[server]` extra pulls in PyTorch, which is a large download (several GB on Linux with CUDA). The client-only install is a few small packages.
 - On macOS the `[cuda]` extra installs nothing; it is for Linux with an NVIDIA GPU. It installs `flash-linear-attention`, the kernels that matter. transformers may still warn that `causal_conv1d` is not installed: that only covers a short convolution, and is safe to ignore.
 - To upgrade: `pip install --pre -U "wazn-experimental[server]"`.
