@@ -56,6 +56,45 @@ def fast_kernels_available() -> bool:
     return True
 
 
+def fla_causal_conv1d_fn(hidden_states, weight, bias=None, activation=None, **kwargs):
+    """transformers' `causal_conv1d_fn` on fla's Triton kernel.
+
+    transformers reads `[batch, channels, time]` and returns the same;
+    fla's `causal_conv1d` reads `[batch, time, channels]` and returns
+    `(output, final_state)`. The weight is `[channels, kernel]` in both."""
+    from fla.modules.conv import causal_conv1d
+
+    out, _ = causal_conv1d(hidden_states.transpose(1, 2), weight=weight, bias=bias,
+                           activation=activation)
+    return out.transpose(1, 2)
+
+
+def use_fla_causal_conv1d(backbone: torch.nn.Module) -> bool:
+    """Point the backbone's short convolution at fla's Triton kernel.
+
+    Without the `causal-conv1d` package (a CUDA extension that needs a
+    toolkit matching torch's CUDA to build), transformers runs a PyTorch
+    fallback and warns. fla, which the `[cuda]` extra installs anyway,
+    ships the same operation in Triton. A real `causal-conv1d` install is
+    left alone. -> whether the backbone now uses fla's kernel"""
+    import importlib.util
+    import sys
+
+    if importlib.util.find_spec("causal_conv1d") is not None:
+        return False
+    try:
+        from fla.modules.conv import causal_conv1d  # noqa: F401
+    except Exception:
+        return False
+    modules = {sys.modules.get(type(m).__module__) for m in backbone.modules()}
+    patched = False
+    for module in modules:
+        if module is not None and hasattr(module, "causal_conv1d_fn"):
+            module.causal_conv1d_fn = fla_causal_conv1d_fn
+            patched = True
+    return patched
+
+
 def resolve_source(source: str | Path, revision: str | None = None) -> Path:
     """A local checkpoint directory, or a hub repo id downloaded to the cache."""
     path = Path(source).expanduser()
@@ -109,11 +148,14 @@ def load_checkpoint(
     config.backbone.dtype = resolve_dtype(dtype, config.backbone.dtype)
 
     model = WaznModel(config)
-    if model.is_recurrent and torch.device(device).type == "cuda" and not fast_kernels_available():
-        log.warning(
-            "running on CUDA without the fused linear-attention kernels; predictions will be "
-            "much slower than they need to be. Install them: pip install 'wazn-experimental[cuda]'"
-        )
+    if model.is_recurrent and torch.device(device).type == "cuda":
+        if not fast_kernels_available():
+            log.warning(
+                "running on CUDA without the fused linear-attention kernels; predictions will be "
+                "much slower than they need to be. Install them: pip install 'wazn-experimental[cuda]'"
+            )
+        else:
+            use_fla_causal_conv1d(model.backbone)
     state = read_head(directory)
     missing, unexpected = model.load_state_dict(state, strict=False)
     if unexpected:
